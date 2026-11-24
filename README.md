@@ -1,0 +1,46 @@
+# Universal Container Sorter
+
+A standalone Lua mod for OpenMW 0.51. Hold the sorter modifier and activate a container to preview a category deposit or a Terraria-style Quick Stack. The sorter opens over the container's regular inventory window.
+
+## Install
+
+Add the folder containing `UniversalContainerSorter.omwscripts`, `scripts`, and `l10n` as an OpenMW data directory. Enable `UniversalContainerSorter.omwscripts` in the launcher, or add `content=UniversalContainerSorter.omwscripts` to `openmw.cfg`. The mod uses only Lua and can be added to an existing save without a migration. Uninstalling it leaves completed deposits in the game world.
+
+The modifier defaults to **T**. OpenMW also defaults **Rest** to **T**. Rebind Rest under Controls or set the sorter to a free key such as **F8** under **Options → Scripts → Universal Container Sorter**. The modifier setting takes OpenMW key names such as `T`, `F8`, or `LeftCtrl`. Press and hold the modifier before activating.
+
+## Deposit items
+
+- Select any combination of categories, or use **Select all**.
+- Select **Quick Stack** to deposit items whose base record is already present in the target. The engine handles merging compatible stacks, so two instances of the same record can still stay in separate stacks.
+- Category and Quick Stack counts show eligible units. The **Deposit** button shows how many units fit as whole stacks, and the capacity note reports the remainder. The sorter considers stacks in inventory order and can fit a smaller stack after skipping a larger one.
+- **Cancel** returns to the regular container window. Confirming closes both windows and reports the deposit. If the selected stack IDs or counts change before confirmation, the sorter displays the updated preview for a fresh confirmation.
+
+## Protections
+
+| Scope | Behavior |
+| --- | --- |
+| Equipment, currency, and keys | Equipped stacks and engine gold records stay in your inventory. Keys stay in your inventory by default. Enable key deposits in the mod's settings if desired. |
+| Favorites | With Inventory Extender 1.1 installed, favorite stacks are protected by their instance IDs. |
+| Ownership | Containers and item references owned by another actor or faction are excluded. |
+| Locks and traps | OpenMW handles activation normally. A container that starts the activation locked or trapped is skipped on that activation. |
+| Organic or respawning containers | Excluded from sorting. |
+| Scripted objects | MWScript records and attached Lua scripts discoverable through enabled, readable `.omwscripts` manifests are protected. OpenMW 0.51 can check Lua attachments by path. For scripts whose paths are available only in binary plugin data, add the affected record IDs to the blacklist. |
+| Blacklist | Enter comma-separated item or container record IDs under **Protected record IDs**. |
+
+The sorter uses OpenMW's record types for ordinary and mod-added Morrowind items. Its categories follow Inventory Extender, including the convention of grouping enchanted books with scrolls and lights with tools.
+
+## Compatibility and implementation
+
+The sorter observes the configured key's press and release events. When the engine reports Activate, it checks the physical modifier once to guard against a release event missed by a console or modal dialog. A complete tap within the same input batch can fall through to normal activation.
+
+The global container activation handler leaves the engine's activation chain in place. The sorter starts a preview only after the native UI opens for the same container reference. It uses the stock Morrowind UI templates, so Inventory Extender can supply its own underlying inventory and container windows. The two Inventory Extender 1.1 type-wide UI bookkeeping scripts are allowed through the Lua script check.
+
+Inventory reads occur at preview and confirmation. Category toggles use the temporary preview data. The global script rechecks protections and capacity at confirmation and calls `GameObject:moveInto` once per approved stack. The preview is discarded on close, and the sorter writes no session data to the save.
+
+## Validation
+
+Run `lua tests/plan.lua` from the repository root to check the capacity and stack-selection logic independently of OpenMW. Engine testing uses OpenMW 0.51.0 with a synthetic fixture and covers the input, UI, and transfer APIs separately from syntax and planner tests.
+
+## Credits
+
+Inspired by Mudcrab Island's ingredient sorter and Terraria's Quick Stack. Category conventions and favorite integration reference Ralts's Inventory Extender 1.1 (MIT). Its license is included in `LICENSE.InventoryExtender`. The sorter uses OpenMW's built-in UI assets.
