@@ -1,0 +1,3 @@
+MENU: scripts/UniversalContainerSorter/settings.lua
+GLOBAL: scripts/UniversalContainerSorter/global.lua
+PLAYER: scripts/UniversalContainerSorter/player.lua
