@@ -5,21 +5,27 @@ local vfs = require('openmw.vfs')
 -- OpenMW 0.51 uses these exact miscellaneous record IDs for currency.
 local gold = { gold_001 = true, gold_005 = true, gold_010 = true, gold_025 = true, gold_100 = true }
 
--- Inventory Extender 1.1's type-wide scripts manage its UI and do not make
--- every item or container a quest/scripted reference.
-local inventoryExtenderScripts = {
-    ['scripts/inventoryextender/item.lua'] = true,
-    ['scripts/inventoryextender/container.lua'] = true,
-}
-
-local itemTags = {
-    ARMOR = true, BOOK = true, CLOTHING = true, INGREDIENT = true, LIGHT = true,
-    MISC_ITEM = true, POTION = true, WEAPON = true, APPARATUS = true,
-    LOCKPICK = true, PROBE = true, REPAIR = true,
+-- A type-wide autostart script is not evidence that a particular item or
+-- container is special. Only check CUSTOM scripts on types to which that
+-- script is not automatically attached. MWScript remains protected.
+local typeTags = {
+    [types.Armor] = 'ARMOR',
+    [types.Book] = 'BOOK',
+    [types.Clothing] = 'CLOTHING',
+    [types.Container] = 'CONTAINER',
+    [types.Ingredient] = 'INGREDIENT',
+    [types.Light] = 'LIGHT',
+    [types.Miscellaneous] = 'MISC_ITEM',
+    [types.Potion] = 'POTION',
+    [types.Weapon] = 'WEAPON',
+    [types.Apparatus] = 'APPARATUS',
+    [types.Lockpick] = 'LOCKPICK',
+    [types.Probe] = 'PROBE',
+    [types.Repair] = 'REPAIR',
 }
 
 local function luaScripts()
-    local itemPaths, containerPaths = {}, {}
+    local declarations = {}
     for _, file in ipairs(core.contentFiles.list) do
         if file:lower():match('%.omwscripts$') then
             local handle = vfs.open(file)
@@ -28,35 +34,31 @@ local function luaScripts()
                     local tags, path = line:match('^%s*([^#:%s][^:]*):%s*(.-)%s*$')
                     if path and path:lower():match('%.lua$') then
                         path = path:lower():gsub('\\', '/')
-                        if not inventoryExtenderScripts[path] then
-                            for tag in tags:gmatch('[A-Z_]+') do
-                                if tag == 'CUSTOM' or itemTags[tag] then
-                                    itemPaths[path] = true
-                                end
-                                if tag == 'CUSTOM' or tag == 'CONTAINER' then
-                                    containerPaths[path] = true
-                                end
-                            end
+                        local flags = {}
+                        for tag in tags:gmatch('[A-Z_]+') do
+                            flags[tag] = true
                         end
+                        -- As in the engine, the last text declaration wins.
+                        declarations[path] = flags.CUSTOM and flags or nil
                     end
                 end
                 handle:close()
             end
         end
     end
-    return itemPaths, containerPaths
+    return declarations
 end
 
 local function isScripted(object, record, paths)
     if record.mwscript and record.mwscript ~= '' then
-        return true
+        return 'MWScript: ' .. tostring(record.mwscript)
     end
-    for path in pairs(paths) do
-        if object:hasScript(path) then
-            return true
+    local tag = typeTags[object.type]
+    for path, flags in pairs(paths) do
+        if not flags[tag] and object:hasScript(path) then
+            return 'CUSTOM Lua: ' .. path
         end
     end
-    return false
 end
 
 local function blacklistIds(setting)
@@ -88,8 +90,12 @@ local function targetError(target, player, record, blacklist, paths)
     if record.isRespawning then
         return 'respawning'
     end
-    if blacklist[target.recordId] or isScripted(target, record, paths) then
-        return 'protectedContainer'
+    if blacklist[target.recordId] then
+        return 'blacklistedContainer', 'Record ID: ' .. target.recordId
+    end
+    local script = isScripted(target, record, paths)
+    if script then
+        return 'scriptedContainer', script
     end
     if types.Container.getCapacity(target) <= 0 then
         return 'noCapacity'

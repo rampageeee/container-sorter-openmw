@@ -24,7 +24,7 @@ The modifier defaults to **T**. OpenMW also defaults **Rest** to **T**. Rebind R
 | Ownership | Containers and item references owned by another actor or faction are excluded. |
 | Locks and traps | OpenMW handles activation normally. A container that starts the activation locked or trapped is skipped on that activation. |
 | Organic or respawning containers | Excluded from sorting. |
-| Scripted objects | MWScript records and attached Lua scripts discoverable through enabled, readable `.omwscripts` manifests are protected. OpenMW 0.51 can check Lua attachments by path. For scripts whose paths are available only in binary plugin data, add the affected record IDs to the blacklist. |
+| Scripted objects | MWScript records and discoverable object-specific `CUSTOM` Lua attachments are protected. Type-wide autostart scripts alone do not mark an object protected. For scripts whose paths or attachment rules are available only in binary plugin data, add affected record IDs to the blacklist. Debug logging identifies the exact script or blacklist match for a rejected container. |
 | Blacklist | Enter comma-separated item or container record IDs under **Protected record IDs**. |
 
 The sorter uses OpenMW's record types for ordinary and mod-added Morrowind items. Its categories follow Inventory Extender, including the convention of grouping enchanted books with scrolls and lights with tools.
@@ -33,7 +33,7 @@ The sorter uses OpenMW's record types for ordinary and mod-added Morrowind items
 
 The sorter reacts to the native `UiModeChanged` event, which supplies the opened container reference, and checks the physical modifier once. It does not subscribe to key presses, input actions, or per-frame updates. A short tap released before the UI event may fall through to normal activation.
 
-The global container activation handler records whether the target was locked or trapped before the native action and leaves the engine's activation chain in place. The preview request validates that it matches that activation, consumes the record, and rechecks all normal container protections. A native activation that cannot be verified is rejected rather than bypassing protections. The sorter uses the stock Morrowind UI templates, so Inventory Extender can supply its own underlying inventory and container windows. The two Inventory Extender 1.1 type-wide UI bookkeeping scripts are allowed through the Lua script check.
+The global container activation handler records whether the target was locked or trapped before the native action and leaves the engine's activation chain in place. The preview request validates that it matches that activation, consumes the record, and rechecks all normal container protections. A native activation that cannot be verified is rejected rather than bypassing protections. The sorter uses the stock Morrowind UI templates, so Inventory Extender can supply its own underlying inventory and container windows. Type-wide UI bookkeeping scripts, including Inventory Extender's, do not by themselves block sorting.
 
 Inventory reads occur at preview and confirmation. Category toggles use the temporary preview data. The global script rechecks protections and capacity at confirmation and calls `GameObject:moveInto` once per approved stack. The preview is discarded on close, and the sorter writes no session data to the save.
 

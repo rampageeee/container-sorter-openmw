@@ -59,6 +59,7 @@ local function options()
     end
     return {
         favorites = favorites,
+        debug = settings:get('debug') == true,
         allowKeys = settings:get('allowKeys') == true,
         blacklist = settings:get('blacklist') or '',
     }

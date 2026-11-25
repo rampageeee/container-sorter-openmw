@@ -9,9 +9,12 @@ local function inspectTarget(target, player, options)
 
     local record = types.Container.record(target)
     local blacklist = Protection.blacklistIds(options.blacklist)
-    local itemPaths, containerPaths = Protection.luaScripts()
-    local reason = Protection.targetError(target, player, record, blacklist, containerPaths)
+    local scriptPaths = Protection.luaScripts()
+    local reason, detail = Protection.targetError(target, player, record, blacklist, scriptPaths)
     if reason then
+        if options.debug and detail then
+            print('[Universal Container Sorter] Protection: ' .. detail)
+        end
         return nil, reason
     end
 
@@ -46,7 +49,7 @@ local function inspectTarget(target, player, options)
             local itemRecord = itemType.record and itemType.record(item)
             local category = itemRecord and Categories.classify(itemType, itemRecord)
             if category and (category ~= 'Keys' or options.allowKeys)
-                and not Protection.isScripted(item, itemRecord, itemPaths)
+                and not Protection.isScripted(item, itemRecord, scriptPaths)
                 and not Protection.belongsToSomeoneElse(item, player)
             then
                 local count = item.count
