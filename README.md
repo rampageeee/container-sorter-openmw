@@ -6,7 +6,7 @@ A standalone Lua mod for OpenMW 0.51. Hold the sorter modifier and activate a co
 
 Add the folder containing `UniversalContainerSorter.omwscripts`, `scripts`, and `l10n` as an OpenMW data directory. Enable `UniversalContainerSorter.omwscripts` in the launcher, or add `content=UniversalContainerSorter.omwscripts` to `openmw.cfg`. The mod uses only Lua and can be added to an existing save without a migration. Uninstalling it leaves completed deposits in the game world.
 
-The modifier defaults to **T**. OpenMW also defaults **Rest** to **T**. Rebind Rest under Controls or set the sorter to a free key such as **F8** under **Options → Scripts → Universal Container Sorter**. The modifier setting takes OpenMW key names such as `T`, `F8`, or `LeftCtrl`. Press and hold the modifier before activating.
+The modifier defaults to **T**. OpenMW also defaults **Rest** to **T**. Rebind Rest under Controls or set the sorter to a free key such as **F8** under **Options → Scripts → Universal Container Sorter**. The modifier setting takes OpenMW key names such as `T`, `F8`, or `LeftCtrl`. Press and hold the modifier before activating, and keep it held until the container window appears. Enable **Debug logging** in the same script settings if the sorter does not open; look for `[Universal Container Sorter]` in `openmw.log`.
 
 ## Deposit items
 
@@ -31,9 +31,9 @@ The sorter uses OpenMW's record types for ordinary and mod-added Morrowind items
 
 ## Compatibility and implementation
 
-The sorter observes the configured key's press and release events. When the engine reports Activate, it checks the physical modifier once to guard against a release event missed by a console or modal dialog. A complete tap within the same input batch can fall through to normal activation.
+The sorter reacts to the native `UiModeChanged` event, which supplies the opened container reference, and checks the physical modifier once. It does not subscribe to key presses, input actions, or per-frame updates. A short tap released before the UI event may fall through to normal activation.
 
-The global container activation handler leaves the engine's activation chain in place. The sorter starts a preview only after the native UI opens for the same container reference. It uses the stock Morrowind UI templates, so Inventory Extender can supply its own underlying inventory and container windows. The two Inventory Extender 1.1 type-wide UI bookkeeping scripts are allowed through the Lua script check.
+The global container activation handler records whether the target was locked or trapped before the native action and leaves the engine's activation chain in place. The preview request validates that it matches that activation, consumes the record, and rechecks all normal container protections. A native activation that cannot be verified is rejected rather than bypassing protections. The sorter uses the stock Morrowind UI templates, so Inventory Extender can supply its own underlying inventory and container windows. The two Inventory Extender 1.1 type-wide UI bookkeeping scripts are allowed through the Lua script check.
 
 Inventory reads occur at preview and confirmation. Category toggles use the temporary preview data. The global script rechecks protections and capacity at confirmation and calls `GameObject:moveInto` once per approved stack. The preview is discarded on close, and the sorter writes no session data to the save.
 

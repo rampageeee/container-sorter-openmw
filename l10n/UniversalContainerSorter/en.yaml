@@ -40,3 +40,7 @@ allowKeys: "Allow depositing keys"
 allowKeysDescription: "Let keys appear in category sorting and Quick Stack."
 blacklist: "Protected record IDs"
 blacklistDescription: "Comma-separated item or container record IDs to exclude from sorting."
+
+activationUnverified: "Could not verify native container activation. Close the container and activate it again."
+debug: "Debug logging"
+debugDescription: "Log container UI events, modifier state, preview requests and rejection reasons to openmw.log."

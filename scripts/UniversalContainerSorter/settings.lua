@@ -22,6 +22,13 @@ settings.registerGroup {
             default = 'T',
         },
         {
+            key = 'debug',
+            name = 'debug',
+            description = 'debugDescription',
+            renderer = 'checkbox',
+            default = false,
+        },
+        {
             key = 'allowKeys',
             name = 'allowKeys',
             description = 'allowKeysDescription',

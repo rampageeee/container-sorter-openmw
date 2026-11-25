@@ -4,31 +4,34 @@ local I = require('openmw.interfaces')
 local Inventory = require('scripts.UniversalContainerSorter.inventory')
 local Plan = require('scripts.UniversalContainerSorter.plan')
 
-local intent
-local candidate
+local activation
 local session
 
 local function sameRequest(state, data)
     return state and state.token == data.token and state.player == data.player
 end
 
+local function sameTarget(state, data)
+    return state and state.player == data.player and state.target == data.target
+end
+
+local function debugLog(data, message)
+    if data.debug == true then
+        print('[Universal Container Sorter] ' .. message)
+    end
+end
+
 I.Activation.addHandlerForType(types.Container, function(target, actor)
-    if not intent or intent.player ~= actor then
+    if not types.Player.objectIsInstance(actor) then
         return
     end
-    local token = intent.token
-    intent = nil
-
-    -- Leave locks and traps entirely to native activation, even if the player has the key.
-    if types.Lockable.isLocked(target) or types.Lockable.getTrapSpell(target) then
-        return
-    end
-
-    candidate = { token = token, player = actor, target = target }
-    actor:sendEvent('UCS_Candidate', { token = token, target = target })
-    core.sendGlobalEvent('UCS_ExpireCandidate', { token = token, player = actor })
-    -- Continue the normal activation chain. The player only opens the sorter if
-    -- the engine subsequently enters Container mode for this reference.
+    -- Record the state BEFORE the standard action may unlock or disarm it.
+    -- This handler never interrupts the native activation chain.
+    activation = {
+        player = actor,
+        target = target,
+        blocked = types.Lockable.isLocked(target) or types.Lockable.getTrapSpell(target) ~= nil,
+    }
 end)
 
 local function reply(request, data)
@@ -48,52 +51,54 @@ end
 return {
     engineHandlers = {
         onLoad = function()
-            intent, candidate, session = nil, nil, nil
+            activation, session = nil, nil
         end,
     },
     eventHandlers = {
-        UCS_Intent = function(data)
-            if data.player:isValid() and types.Player.objectIsInstance(data.player) then
-                intent = { player = data.player, token = data.token }
-                -- Events sent from a handler enter the next batch. Current-batch
-                -- activation still has access to the intent.
-                core.sendGlobalEvent('UCS_ExpireIntent', data)
-            end
-        end,
-        UCS_ExpireIntent = function(data)
-            if sameRequest(intent, data) then
-                intent = nil
-            end
-        end,
-        UCS_ExpireCandidate = function(data)
-            if sameRequest(candidate, data) then
-                candidate.player:sendEvent('UCS_ExpireCandidate', { token = data.token })
+        UCS_DiscardActivation = function(data)
+            if sameTarget(activation, data) then
+                activation = nil
             end
         end,
         UCS_Close = function(data)
-            if sameRequest(candidate, data) then
-                candidate = nil
-            end
             if sameRequest(session, data) then
                 session = nil
             end
         end,
         UCS_Preview = function(data)
-            if not sameRequest(candidate, data) or candidate.target ~= data.target then
+            if not data.player or not data.player:isValid()
+                or not types.Player.objectIsInstance(data.player) then
                 return
             end
-            local request = candidate
-            candidate = nil
+            local matched = sameTarget(activation, data)
+            local blocked = matched and activation.blocked
+            activation = nil
+            session = nil
+            local request = { token = data.token, player = data.player, target = data.target }
+            if not matched then
+                debugLog(data, 'Preview rejected: no matching native activation')
+                reply(request, { reason = 'activationUnverified' })
+                return
+            end
+            if blocked then
+                debugLog(data, 'Preview rejected: container was locked or trapped at activation')
+                reply(request, { reason = 'lockedOrTrapped' })
+                return
+            end
+            debugLog(data, 'Inspecting ' .. request.target.recordId)
             local snapshot, reason = inspect(request, data.options)
             if not snapshot then
+                debugLog(data, 'Preview rejected: ' .. tostring(reason))
                 reply(request, { reason = reason })
                 return
             end
+            debugLog(data, 'Preview ready: ' .. #snapshot.stacks .. ' eligible stacks')
             session = request
             reply(request, { snapshot = snapshot })
         end,
         UCS_Confirm = function(data)
             if not sameRequest(session, data) then
+                debugLog(data, 'Confirmation ignored: no matching session')
                 return
             end
             local request = session
