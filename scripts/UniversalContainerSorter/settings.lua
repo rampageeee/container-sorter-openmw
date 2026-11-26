@@ -36,6 +36,27 @@ settings.registerGroup {
             default = false,
         },
         {
+            key = 'protectMWContainers',
+            name = 'protectMWContainers',
+            description = 'protectMWContainersDescription',
+            renderer = 'checkbox',
+            default = true,
+        },
+        {
+            key = 'protectLuaContainers',
+            name = 'protectLuaContainers',
+            description = 'protectLuaContainersDescription',
+            renderer = 'checkbox',
+            default = false,
+        },
+        {
+            key = 'protectLuaItems',
+            name = 'protectLuaItems',
+            description = 'protectLuaItemsDescription',
+            renderer = 'checkbox',
+            default = false,
+        },
+        {
             key = 'blacklist',
             name = 'blacklist',
             description = 'blacklistDescription',

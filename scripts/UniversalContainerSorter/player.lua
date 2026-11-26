@@ -61,6 +61,9 @@ local function options()
         favorites = favorites,
         debug = settings:get('debug') == true,
         allowKeys = settings:get('allowKeys') == true,
+        protectMWContainers = settings:get('protectMWContainers') ~= false,
+        protectLuaContainers = settings:get('protectLuaContainers') == true,
+        protectLuaItems = settings:get('protectLuaItems') == true,
         blacklist = settings:get('blacklist') or '',
     }
 end
@@ -202,7 +205,16 @@ return {
             end
             close()
             if data.reason then
-                ui.showMessage(l10n(data.reason))
+                local message = l10n(data.reason)
+                if message == data.reason then
+                    local fallback = {
+                        mwscriptContainer = 'Container has MWScript. See script settings and openmw.log.',
+                        luaScriptContainer = 'Container has a CUSTOM Lua script. See script settings and openmw.log.',
+                        blacklistedContainer = 'Container is on the protected record ID blacklist.',
+                    }
+                    message = fallback[data.reason] or message
+                end
+                ui.showMessage(message)
             else
                 I.UI.removeMode(containerMode)
                 ui.showMessage(l10n(data.partial and 'partial' or 'transferred', { count = data.moved }))

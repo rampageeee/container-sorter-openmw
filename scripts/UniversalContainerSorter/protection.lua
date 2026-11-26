@@ -49,16 +49,24 @@ local function luaScripts()
     return declarations
 end
 
-local function isScripted(object, record, paths)
-    if record.mwscript and record.mwscript ~= '' then
-        return 'MWScript: ' .. tostring(record.mwscript)
+local function legacyScript(record)
+    local script = record.mwscript
+    if script and script ~= '' then
+        return 'MWScript: ' .. tostring(script)
     end
+end
+
+local function luaScript(object, paths)
     local tag = typeTags[object.type]
     for path, flags in pairs(paths) do
         if not flags[tag] and object:hasScript(path) then
             return 'CUSTOM Lua: ' .. path
         end
     end
+end
+
+local function isScripted(object, record, paths)
+    return legacyScript(record) or luaScript(object, paths)
 end
 
 local function blacklistIds(setting)
@@ -77,7 +85,7 @@ local function belongsToSomeoneElse(object, player)
     return owner.factionId ~= nil or (owner.recordId ~= nil and owner.recordId ~= player.recordId)
 end
 
-local function targetError(target, player, record, blacklist, paths)
+local function targetError(target, player, record, blacklist, paths, options)
     if types.Lockable.isLocked(target) or types.Lockable.getTrapSpell(target) then
         return 'lockedOrTrapped'
     end
@@ -93,9 +101,17 @@ local function targetError(target, player, record, blacklist, paths)
     if blacklist[target.recordId] then
         return 'blacklistedContainer', 'Record ID: ' .. target.recordId
     end
-    local script = isScripted(target, record, paths)
-    if script then
-        return 'scriptedContainer', script
+    if options.protectMWContainers ~= false then
+        local script = legacyScript(record)
+        if script then
+            return 'mwscriptContainer', script
+        end
+    end
+    if options.protectLuaContainers == true then
+        local script = luaScript(target, paths)
+        if script then
+            return 'luaScriptContainer', script
+        end
     end
     if types.Container.getCapacity(target) <= 0 then
         return 'noCapacity'
@@ -106,6 +122,7 @@ return {
     gold = gold,
     luaScripts = luaScripts,
     isScripted = isScripted,
+    legacyScript = legacyScript,
     blacklistIds = blacklistIds,
     belongsToSomeoneElse = belongsToSomeoneElse,
     targetError = targetError,

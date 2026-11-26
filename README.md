@@ -24,7 +24,7 @@ The modifier defaults to **T**. OpenMW also defaults **Rest** to **T**. Rebind R
 | Ownership | Containers and item references owned by another actor or faction are excluded. |
 | Locks and traps | OpenMW handles activation normally. A container that starts the activation locked or trapped is skipped on that activation. |
 | Organic or respawning containers | Excluded from sorting. |
-| Scripted objects | MWScript records and discoverable object-specific `CUSTOM` Lua attachments are protected. Type-wide autostart scripts alone do not mark an object protected. For scripts whose paths or attachment rules are available only in binary plugin data, add affected record IDs to the blacklist. Debug logging identifies the exact script or blacklist match for a rejected container. |
+| Scripted objects | MWScript items are always protected; MWScript containers are protected by default, with a setting to allow them. CUSTOM Lua container and item protection are separate opt-in settings, since mods can dynamically attach scripts to ordinary objects. Use favorites and the blacklist for special items and containers, including attachments defined in binary plugins. A script or blacklist rejection always logs the exact matching script or record ID. With both Lua protection settings off, no manifest scanning or Lua attachment queries occur. |
 | Blacklist | Enter comma-separated item or container record IDs under **Protected record IDs**. |
 
 The sorter uses OpenMW's record types for ordinary and mod-added Morrowind items. Its categories follow Inventory Extender, including the convention of grouping enchanted books with scrolls and lights with tools.
