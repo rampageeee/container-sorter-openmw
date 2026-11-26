@@ -1,0 +1,2 @@
+GLOBAL: scripts/ultimatefishing_openmw/world.lua
+PLAYER: scripts/ultimatefishing_openmw/player.lua

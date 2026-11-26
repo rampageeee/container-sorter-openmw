@@ -11,6 +11,12 @@ Lua mods and patches for playing Morrowind in OpenMW.
 
 Add the folder for each mod you use as a separate OpenMW data directory and enable its script list. Each folder has its own installation instructions and credits.
 
+## Prototypes
+
+| Prototype | What it does |
+| --- | --- |
+| [Ultimate Fishing](prototypes/ultimate-fishing/README.md) | Test casting, timed bites, and line tension in OpenMW 0.51.0 using the original mod's pole and fish records. |
+
 ## Patches
 
 | Patch | What it changes |
