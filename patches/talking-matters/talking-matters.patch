@@ -1,0 +1,61 @@
+diff --git a/main.lua b/main.lua
+index 07cf022d51cecf390c9268d99c3ae66b28ac2eab..091450377ac7bcc76745fbae7d1f0ce7fd8e1144 100644
+--- a/main.lua
++++ b/main.lua
+@@ -621,6 +621,23 @@ end
+ 
+ local function menuActivated(e)
+ 
++    -- Defensive fallback for event ordering or MCM setup failures.
++    if not config then
++        local ok, configModule = pcall(require, "talkingMatters.config")
++        if ok and type(configModule) == "table" and type(configModule.loaded) == "table" then
++            config = configModule.loaded
++            log:warn("Talking Matters: recovered configuration during dialogue activation")
++        else
++            log:error("Talking Matters: dialogue skipped because configuration is unavailable: %s",
++                ok and "missing .loaded table" or tostring(configModule))
++            return
++        end
++    end
++    if not data or not data.npcData then
++        log:error("Talking Matters: dialogue skipped because player data has not initialized")
++        return
++    end
++
+     if config.modEnabled == false then
+          return
+      end
+@@ -781,9 +798,29 @@ event.register(tes3.event.loaded, initData)
+ 
+ -- Set up the config file and Mod Configuration Menu (MCM)
+ event.register(tes3.event.modConfigReady, function()
+-  require("talkingMatters.mcm")
+-	config = require("talkingMatters.config").loaded
+-  log:setLogLevel(config.logLevel)
++    log:debug("Talking Matters: modConfigReady received")
++
++    -- Loading the MCM may fail without preventing the gameplay config from loading.
++    local mcmOk, mcmError = pcall(require, "talkingMatters.mcm")
++    if not mcmOk then
++        log:error("Talking Matters: MCM setup failed: %s", tostring(mcmError))
++    end
++
++    local configOk, configModule = pcall(require, "talkingMatters.config")
++    if not configOk then
++        log:error("Talking Matters: config import failed: %s", tostring(configModule))
++        return
++    end
++    if type(configModule) ~= "table" or type(configModule.loaded) ~= "table" then
++        log:error("Talking Matters: config module did not return a .loaded table")
++        return
++    end
++
++    config = configModule.loaded
++    if config.logLevel then
++        log:setLogLevel(config.logLevel)
++    end
++    log:debug("Talking Matters: configuration available")
+ end)
+ 
+ --- @param eventData SmoothTalkerPersuasionEventData

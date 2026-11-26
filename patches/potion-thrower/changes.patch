@@ -1,0 +1,16 @@
+diff --git a/pt_player.lua b/pt_player.lua
+index 1c61cfd176dd177e7200fb69af25687d4ccb648b..c519bbeb3ad101c707753856d066e6c6ad653865 100644
+--- a/pt_player.lua
++++ b/pt_player.lua
+@@ -303,6 +303,11 @@ if not stateSection:get('QuickLobBindingSeeded') then
+ end
+ 
+ local function displayMessage(event)
++	-- OpenMW's built-in ShowMessage event uses `message`, whereas Potion Thrower
++	-- sends custom ShowMessage events with `text`. Ignore unrelated messages.
++	if type(event) ~= 'table' or type(event.text) ~= 'string' then
++		return
++	end
+ 	if visualSettings:get('DisplayMessages') then
+ 		ui.showMessage(event.text)
+ 	end

@@ -1,0 +1,2 @@
+GLOBAL: scripts/pay_taxes_timer/daily.lua
+PLAYER: scripts/pay_taxes_timer/messages.lua

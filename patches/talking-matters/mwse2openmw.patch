@@ -1,0 +1,24 @@
+diff --git a/mcm.lua b/mcm.lua
+index 252b4902e2605cfcbf798dae113d0ea890f1fede..957fec2e525ee2213cc85838eadde480a88ea66d 100644
+--- a/mcm.lua
++++ b/mcm.lua
+@@ -110,7 +110,8 @@ local function sub(g)
+             --print("callback")
+             setting.callback({ variable = { value = val }, section = section, changedKey = changedKey, name = name })
+           end
+-          if _G.registeredMods[g.modName].duplicateStorage then
++          local registeredMod = _G.registeredMods and _G.registeredMods[g.modName]
++          if registeredMod and registeredMod.duplicateStorage then
+             local world = require("openmw.world")
+             world.players[1]:sendEvent("DuplicateStorage", {  changedKey = changedKey, name = name, val = val })
+           end
+@@ -158,7 +159,8 @@ function mwse.mcm.createTemplate(arg)
+ 
+       local section = storageSection(template._sectionName or modName)
+       section:set("categories", template._categories)
+-      if _G.registeredMods[self.modName].duplicateStorage then
++      local registeredMod = _G.registeredMods and _G.registeredMods[self.modName]
++      if registeredMod and registeredMod.duplicateStorage then
+         local world = require("openmw.world")
+         world.players[1]:sendEvent("DuplicateStorage", {  changedKey = "categories", name = template._sectionName or modName, val = template._categories })
+       end

@@ -1,0 +1,2 @@
+GLOBAL: scripts/art_of_alchemy_retort/global.lua
+PLAYER: scripts/art_of_alchemy_retort/player.lua

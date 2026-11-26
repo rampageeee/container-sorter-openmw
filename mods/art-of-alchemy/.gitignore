@@ -1,0 +1,5 @@
+*.omwsave
+*.omwgame
+*.log
+.DS_Store
+Thumbs.db

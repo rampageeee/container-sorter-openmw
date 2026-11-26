@@ -1,0 +1,768 @@
+diff --git a/scripts/aura_openmw/core/object_query.lua b/scripts/aura_openmw/core/object_query.lua
+index 246cd1c58fb1d22094530ed4e05205f70965e293..07cc9ea8912ba6841d4e2902539779faa7dea1f2 100644
+--- a/scripts/aura_openmw/core/object_query.lua
++++ b/scripts/aura_openmw/core/object_query.lua
+@@ -6,16 +6,18 @@ local function lower(value)
+     return string.lower(tostring(value or ""))
+ end
+ 
+-local function getRecordField(object, objectType, field)
+-    if not object or not objectType or not objectType.record then
++local function getScanRecord(object, objectType)
++    if objectType ~= types.Static and objectType ~= types.Activator
++        and objectType ~= types.Door and objectType ~= types.Container then
+         return nil
+     end
+ 
+-    -- OpenMW record access can throw when the object is not of this type.
+-    -- Keep the guard here at the API boundary; avoid pcall in ordinary logic.
+-    local ok, record = pcall(objectType.record, object)
+-    if ok and record then
+-        return record[field]
++    -- Query only the object's own type. Keep the guard for unavailable records.
++    if object and objectType and objectType.record then
++        local ok, record = pcall(objectType.record, object)
++        if ok then
++            return record
++        end
+     end
+ 
+     return nil
+@@ -30,42 +32,47 @@ function M.getRecordId(object)
+         return ""
+     end
+ 
+-    if object.recordId and object.recordId ~= "" then
+-        return lower(object.recordId)
++    local recordId = object.recordId
++    if recordId and recordId ~= "" then
++        return lower(recordId)
+     end
+ 
+-    return lower(
+-        getRecordField(object, types.Static, "id")
+-        or getRecordField(object, types.Activator, "id")
+-        or getRecordField(object, types.Door, "id")
+-        or getRecordField(object, types.Container, "id")
+-        or object.id
+-    )
++    local record = getScanRecord(object, object.type)
++    return lower(record and record.id or object.id)
+ end
+ 
+-function M.getRecordName(object)
+-    return lower(
+-        getRecordField(object, types.Activator, "name")
+-        or getRecordField(object, types.Door, "name")
+-        or getRecordField(object, types.Container, "name")
+-    )
+-end
++-- A caller can share record text within a scan. Instances of the same base
++-- record have the same name and model, but positions and validity are per reference.
++function M.scanText(object, cacheByType)
++    if not object then
++        return "  "
++    end
+ 
+-function M.getRecordModel(object)
+-    return lower(
+-        getRecordField(object, types.Static, "model")
+-        or getRecordField(object, types.Activator, "model")
+-        or getRecordField(object, types.Door, "model")
+-        or getRecordField(object, types.Container, "model")
+-    )
+-end
++    local objectType = object.type
++    local recordId = object.recordId
++    local cache
++    if cacheByType and objectType and recordId and recordId ~= "" then
++        cache = cacheByType[objectType]
++        if not cache then
++            cache = {}
++            cacheByType[objectType] = cache
++        end
++        if cache[recordId] then
++            return cache[recordId]
++        end
++    end
+ 
+-function M.scanText(object)
+-    return table.concat({
+-        M.getRecordId(object),
+-        M.getRecordName(object),
+-        M.getRecordModel(object),
+-    }, " ")
++    local record = getScanRecord(object, objectType)
++    if not recordId or recordId == "" then
++        recordId = (record and record.id) or object.id
++    end
++    local name = record and objectType ~= types.Static and record.name
++    local model = record and record.model
++    local text = lower(recordId) .. " " .. lower(name or "") .. " " .. lower(model)
++    if cache and record then
++        cache[recordId] = text
++    end
++    return text
+ end
+ 
+ function M.getObjectKey(object)
+@@ -88,11 +95,12 @@ function M.getObjectKey(object)
+ end
+ 
+ function M.distanceBetween(a, b)
+-    if not a or not b or not a.position or not b.position then
+-        return nil
++    local aPosition = a and a.position
++    local bPosition = b and b.position
++    if aPosition and bPosition then
++        return (aPosition - bPosition):length()
+     end
+-
+-    return (a.position - b.position):length()
++    return nil
+ end
+ 
+ local function canGetAll(cell)
+diff --git a/scripts/aura_openmw/core/tuning.lua b/scripts/aura_openmw/core/tuning.lua
+index fe789b01fc712d23691553d74d4815f6ec260d26..4f0d4de1971fb6bab5f54d2bfcc197a5048f2102 100644
+--- a/scripts/aura_openmw/core/tuning.lua
++++ b/scripts/aura_openmw/core/tuning.lua
+@@ -13,6 +13,7 @@ return {
+ 
+     -- Flora timing and detection
+     FLORA_POLL_INTERVAL = 0.5,
++    FLORA_STATIONARY_RETRY_INTERVAL = 2.0,
+     FLORA_MOVE_THRESHOLD = 150,
+     FLORA_COOLDOWN_TICKS = 1,
+     FLORA_RAY_START_Z = 90,
+@@ -48,6 +49,7 @@ return {
+     POPULATED_RUIN_PROXIMITY_ENABLED = true,
+     POPULATED_RUIN_PROXIMITY_DISTANCE = 2000,
+     POPULATED_RUIN_PROXIMITY_MIN_STATICS = 1,
++    POPULATED_RUIN_CACHE_REFRESH_INTERVAL = 8.0,
+ 
+     -- Door bleed
+     DOOR_BLEED_POLL_INTERVAL = 0.5,
+@@ -55,6 +57,7 @@ return {
+     DOOR_BLEED_SCAN_DISTANCE = 1000,
+     DOOR_BLEED_CACHE_REFRESH_INTERVAL = 8.0,
+     DOOR_BLEED_CACHE_MOVE_REFRESH_DISTANCE = 350,
++    DOOR_BLEED_DESTINATION_REFRESH_INTERVAL = 30.0,
+     DOOR_BLEED_MAX_SOURCES = 0, --0 is infinite sources
+     DOOR_BLEED_MISSING_GRACE_POLLS = 2,
+     DOOR_BLEED_TIME_OFFSET_SPREAD = 8.0,
+@@ -89,7 +92,7 @@ return {
+ 
+     -- Interior classification
+     INTERIOR_STATIC_CLASSIFICATION_MIN_MATCHES = 2,
+-    INTERIOR_STATIC_CLASSIFICATION_POLL_INTERVAL = 0.75,
++    INTERIOR_STATIC_CLASSIFICATION_REFRESH_INTERVAL = 8.0,
+ 
+     -- Exposure/underwater detection
+     EXPOSURE_POLL_INTERVAL = 0.5,
+diff --git a/scripts/aura_openmw/global.lua b/scripts/aura_openmw/global.lua
+index 75c1d0219d5a433ffed14bcc32ea29cb3fb71c3b..5501176007cc2bd78fd32e9dded8f85b6a6efa16 100644
+--- a/scripts/aura_openmw/global.lua
++++ b/scripts/aura_openmw/global.lua
+@@ -48,7 +48,9 @@ local lastDoorPoll = -9999
+ local lastStaticPoll = -9999
+ local lastPopulatedPoll = -9999
+ local lastActivationSoundPoll = -9999
+-local lastInteriorStaticPoll = -9999
++local lastInteriorStaticCell
++local lastInteriorStaticMinMatches
++local nextInteriorStaticRefresh = -9999
+ local lastInteriorStaticSentKey = nil
+ local lastInteriorServiceSentKey = nil
+ 
+@@ -72,21 +74,24 @@ local function sendInteriorStaticClassification(data, current)
+         or data.isExterior ~= false
+         or not objectQuery.isValid(data.player)
+         or not data.player.sendEvent then
++        lastInteriorStaticCell = nil
+         return
+     end
+ 
+-    local interval = tonumber(CONFIG.INTERIOR_STATIC_CLASSIFICATION_POLL_INTERVAL or 0.75) or 0.75
+-    if current - lastInteriorStaticPoll < interval then
+-        return
+-    end
+-    lastInteriorStaticPoll = current
+-
+     local cell = data.player.cell
+     if not cell then
+         return
+     end
+ 
+     local minMatches = tonumber(CONFIG.INTERIOR_STATIC_CLASSIFICATION_MIN_MATCHES or 2) or 2
++    if lastInteriorStaticCell == cell and lastInteriorStaticMinMatches == minMatches
++        and current < nextInteriorStaticRefresh then
++        return
++    end
++    lastInteriorStaticCell = cell
++    lastInteriorStaticMinMatches = minMatches
++    nextInteriorStaticRefresh = current + CONFIG.INTERIOR_STATIC_CLASSIFICATION_REFRESH_INTERVAL
++
+     local interiorType, reason = doorData.classifyByStaticFingerprint(cell, minMatches)
+     if not interiorType then
+         return
+@@ -225,6 +230,7 @@ local function updateObjectAmbience(data)
+ end
+ 
+ local function stopObjectAmbience()
++    lastInteriorStaticCell = nil
+     doorBleedController.stopAll()
+     staticController.stopAll()
+     populatedController.stopAll()
+diff --git a/scripts/aura_openmw/indoor/door_bleed_data.lua b/scripts/aura_openmw/indoor/door_bleed_data.lua
+index 7214a5243d14df76eb33eec5348ae69766f5a05a..b366f0edd21799019d77f7495063cf1b5f405654 100644
+--- a/scripts/aura_openmw/indoor/door_bleed_data.lua
++++ b/scripts/aura_openmw/indoor/door_bleed_data.lua
+@@ -151,10 +151,11 @@ local function classifyByStatics(cell, minCount, allowPartial)
+     end
+     local counts = {}
+     local examples = {}
++    local recordText = {}
+ 
+     for _, object in ipairs(objectQuery.getStaticsAndActivators(cell)) do
+         if objectQuery.isValid(object) then
+-            local text = objectQuery.scanText(object)
++            local text = objectQuery.scanText(object, recordText)
+             for _, typeName in ipairs(architecturePriority) do
+                 local matched, pattern = containsAny(text, staticPatterns[typeName])
+                 if matched then
+diff --git a/scripts/aura_openmw/objects/door_bleed_controller.lua b/scripts/aura_openmw/objects/door_bleed_controller.lua
+index 1f88011207f6c6002892dff22e394b4d52865781..16ee6c93b3ede53e8d368682848f242938955099 100644
+--- a/scripts/aura_openmw/objects/door_bleed_controller.lua
++++ b/scripts/aura_openmw/objects/door_bleed_controller.lua
+@@ -113,23 +113,7 @@ local function makeCacheKey(data, cell)
+         .. tostring(data.biomePath or "none")
+ end
+ 
+-local function doorMatchesDestination(door, destinationCell)
+-    local text = objectQuery.scanText(door)
+-    local destinationName = string.lower(tostring(destinationCell and destinationCell.name or ""))
+-    local commaName = destinationName:match(",%s*(.+)$")
+-
+-    if commaName and #commaName >= 5 and text:find(commaName, 1, true) then
+-        return true
+-    end
+-    if #destinationName >= 5 and text:find(destinationName, 1, true) then
+-        return true
+-    end
+-
+-    return false
+-end
+-
+-local function exteriorDoorTrack(door, destinationCell)
+-    local interiorType = doorData.classify(destinationCell)
++local function exteriorDoorTrack(door, destinationCell, interiorType)
+     local tracks = doorData.getTracks(interiorType)
+     if not tracks then
+         return nil, nil
+@@ -236,6 +220,9 @@ function M.new(options)
+         refreshedAt = -9999,
+         candidates = {},
+     }
++    local destinationTypes = {}
++    local sourceCell
++    local destinationRefreshInterval = config.DOOR_BLEED_DESTINATION_REFRESH_INTERVAL or 30
+ 
+     local controller = {}
+ 
+@@ -243,9 +230,16 @@ function M.new(options)
+         cache.key = nil
+         cache.refreshedAt = -9999
+         cache.candidates = {}
++        sourceCell = nil
++        destinationTypes = {}
+     end
+ 
+     local function buildCache(data, cell)
++        if sourceCell ~= cell then
++            sourceCell = cell
++            destinationTypes = {}
++        end
++        local current = now(core)
+         local scanDistance = tonumber(data.scanDistance or config.DOOR_BLEED_SCAN_DISTANCE or 900) or 900
+         local candidates = {}
+ 
+@@ -263,7 +257,16 @@ function M.new(options)
+                         -- Their climate/weather ambience is handled as player-centered
+                         -- loops while inside the tent/yurt.
+                         if not interiorContext.isTentOrYurtCellName(destinationCell) then
+-                            path, doorType = exteriorDoorTrack(door, destinationCell)
++                            local key = cellKey(destinationCell)
++                            local cached = destinationTypes[key]
++                            if not cached or current >= cached.refreshAt then
++                                cached = {
++                                    interiorType = doorData.classify(destinationCell),
++                                    refreshAt = current + destinationRefreshInterval,
++                                }
++                                destinationTypes[key] = cached
++                            end
++                            path, doorType = exteriorDoorTrack(door, destinationCell, cached.interiorType)
+                         end
+                     elseif data.mode == "interior" and destinationCell and isOutdoorLike(destinationCell) then
+                         path, doorType = interiorDoorTrack(door, cell, destinationCell, data)
+@@ -278,7 +281,6 @@ function M.new(options)
+                             path = path,
+                             distance = distance,
+                             doorType = doorType,
+-                            directMatch = doorMatchesDestination(door, destinationCell),
+                             key = objectKey
+                                 .. ":door:"
+                                 .. tostring(data.mode or "none")
+@@ -292,6 +294,9 @@ function M.new(options)
+             end
+         end
+ 
++        table.sort(candidates, function(a, b)
++            return a.distance < b.distance
++        end)
+         cache.candidates = candidates
+         cache.key = makeCacheKey(data, cell)
+         cache.refreshedAt = now(core)
+@@ -344,10 +349,6 @@ function M.new(options)
+         local interiorVolume = tonumber(data.interiorDoorBleedVolume or config.INTERIOR_DOOR_BLEED_VOLUME or 0.15) or 0.15
+         local baseVolume = data.mode == "interior" and interiorVolume or exteriorVolume
+ 
+-        table.sort(cache.candidates, function(a, b)
+-            return (a.distance or math.huge) < (b.distance or math.huge)
+-        end)
+-
+         local count = 0
+         for _, cached in ipairs(cache.candidates) do
+             if (not unlimitedSources) and count >= maxSources then
+diff --git a/scripts/aura_openmw/objects/populated_controller.lua b/scripts/aura_openmw/objects/populated_controller.lua
+index 4af69ad5242dd825e922a8ad7f008b7f831a60f7..5fbeca7c196117fcd83d12ab0137ecb328f131b7 100644
+--- a/scripts/aura_openmw/objects/populated_controller.lua
++++ b/scripts/aura_openmw/objects/populated_controller.lua
+@@ -99,10 +99,11 @@ end
+ 
+ local function classifyByStatics(cell, minStatics)
+     local counts = {}
++    local recordText = {}
+ 
+     for _, object in ipairs(objectQuery.getStaticsAndActivators(cell)) do
+         if objectQuery.isValid(object) then
+-            local text = objectQuery.scanText(object)
++            local text = objectQuery.scanText(object, recordText)
+             for typeName, patterns in pairs(populatedData.staticPatterns or {}) do
+                 if containsAny(text, patterns) then
+                     counts[typeName] = (counts[typeName] or 0) + 1
+@@ -130,27 +131,44 @@ local function classifyByStatics(cell, minStatics)
+     return nil, nil
+ end
+ 
+-local function classifyByNearbyRuins(player, cell, scanDistance, minMatches)
+-    if not player or not cell then
+-        return nil, nil
+-    end
+-
+-    scanDistance = tonumber(scanDistance or 0) or 0
+-    minMatches = tonumber(minMatches or 1) or 1
+-    if scanDistance <= 0 then
+-        return nil, nil
++local function refreshRuinCandidates(cell)
++    local candidates = {}
++    local recordText = {}
++    local matchesByText = {}
++    for _, object in ipairs(objectQuery.getStaticsAndActivators(cell)) do
++        if objectQuery.isValid(object) then
++            local text = objectQuery.scanText(object, recordText)
++            local matches = matchesByText[text]
++            if matches == nil then
++                local dae = matchesRuinStaticText(text, "dae")
++                local dwe = matchesRuinStaticText(text, "dwe")
++                matches = (dae or dwe) and { dae = dae, dwe = dwe } or false
++                matchesByText[text] = matches
++            end
++            if matches then
++                candidates[#candidates + 1] = { object = object, matches = matches }
++            end
++        end
+     end
++    return candidates
++end
+ 
++local function classifyByNearbyRuins(player, cell, candidates, scanDistance, minMatches)
+     local counts = {}
+     local nearest = {}
++    local playerPosition = player.position
++    if not playerPosition then
++        return nil, nil
++    end
+ 
+-    for _, object in ipairs(objectQuery.getStaticsAndActivators(cell)) do
+-        if objectQuery.isValid(object) then
+-            local distance = objectQuery.distanceBetween(player, object)
++    for _, candidate in ipairs(candidates) do
++        local object = candidate.object
++        if objectQuery.isValid(object) and object.cell == cell then
++            local position = object.position
++            local distance = position and (playerPosition - position):length()
+             if distance and distance <= scanDistance then
+-                local text = objectQuery.scanText(object)
+                 for _, typeName in ipairs(RUIN_PROXIMITY_TYPES) do
+-                    if matchesRuinStaticText(text, typeName) then
++                    if candidate.matches[typeName] then
+                         counts[typeName] = (counts[typeName] or 0) + 1
+                         if not nearest[typeName] or distance < nearest[typeName] then
+                             nearest[typeName] = distance
+@@ -183,22 +201,6 @@ local function classifyByNearbyRuins(player, cell, scanDistance, minMatches)
+     return nil, nil
+ end
+ 
+-local function classifyByRuinProximity(data, cell, config)
+-    if not data or data.populatedRuinProximityEnabled == false then
+-        return nil, nil
+-    end
+-
+-    local distance = tonumber(data.populatedRuinProximityDistance
+-        or config.POPULATED_RUIN_PROXIMITY_DISTANCE
+-        or config.STATIC_SCAN_DISTANCE
+-        or 2000) or 2000
+-    local minMatches = tonumber(data.populatedRuinProximityMinStatics
+-        or config.POPULATED_RUIN_PROXIMITY_MIN_STATICS
+-        or 1) or 1
+-
+-    return classifyByNearbyRuins(data.player, cell, distance, minMatches)
+-end
+-
+ local function populatedTrackType(data, cellType)
+     if not cellType then
+         return nil
+@@ -236,6 +238,32 @@ function M.new(options)
+     }
+ 
+     local controller = {}
++    local ruinCache = {}
++    local ruinRefreshInterval = config.POPULATED_RUIN_CACHE_REFRESH_INTERVAL or 8
++
++    local function classifyByRuinProximity(data, cell)
++        if data.populatedRuinProximityEnabled == false or not cell then
++            return nil, nil
++        end
++
++        local distance = tonumber(data.populatedRuinProximityDistance
++            or config.POPULATED_RUIN_PROXIMITY_DISTANCE
++            or config.STATIC_SCAN_DISTANCE or 2000) or 2000
++        if distance <= 0 then
++            return nil, nil
++        end
++        local minMatches = tonumber(data.populatedRuinProximityMinStatics
++            or config.POPULATED_RUIN_PROXIMITY_MIN_STATICS or 1) or 1
++
++        -- Cache matches for the whole cell so moving toward a ruin only changes distances.
++        local current = now(core)
++        if ruinCache.cell ~= cell or current >= ruinCache.refreshAt then
++            ruinCache.candidates = refreshRuinCandidates(cell)
++            ruinCache.cell = cell
++            ruinCache.refreshAt = current + ruinRefreshInterval
++        end
++        return classifyByNearbyRuins(data.player, cell, ruinCache.candidates, distance, minMatches)
++    end
+ 
+     local function sendPopulatedState(player, active, path, contextKey, qualified, cellType, reason)
+         if not player or not player.sendEvent then
+@@ -362,6 +390,7 @@ function M.new(options)
+     function controller.stopAll(data)
+         stopCurrent(data and data.player, true)
+         clearClassification()
++        ruinCache = {}
+     end
+ 
+     local function classifyExteriorCell(data, cell)
+@@ -374,7 +403,7 @@ function M.new(options)
+             -- Nearby ruin classification is player-position dependent, so do not
+             -- permanently cache a nil cell classification when the player may be
+             -- walking toward ex_dae/ex_dwe statics inside the same exterior cell.
+-            return classifyByRuinProximity(data, cell, config)
++            return classifyByRuinProximity(data, cell)
+         end
+ 
+         state.classificationKey = key
+@@ -383,7 +412,7 @@ function M.new(options)
+ 
+         local cellType, reason = classifyByName(cell)
+         if not cellType then
+-            cellType, reason = classifyByRuinProximity(data, cell, config)
++            cellType, reason = classifyByRuinProximity(data, cell)
+         end
+         if not cellType then
+             local minStatics = tonumber(data.populatedMinStatics or config.POPULATED_MIN_STATICS or 3) or 3
+@@ -408,6 +437,9 @@ function M.new(options)
+             if not data or data.isExterior ~= true then
+                 clearClassification()
+             end
++            if ruinCache.cell then
++                ruinCache = {}
++            end
+             return
+         end
+ 
+@@ -422,7 +454,7 @@ function M.new(options)
+         local reason = nil
+ 
+         if isRegionName(cellName) then
+-            cellType, reason = classifyByRuinProximity(data, cell, config)
++            cellType, reason = classifyByRuinProximity(data, cell)
+             if not cellType then
+                 stopCurrent(data.player, true)
+                 clearClassification()
+@@ -439,7 +471,10 @@ function M.new(options)
+             requiredNPCs = 0
+         end
+ 
+-        local npcCount = countNPCs(cell, math.max(1, minNPCs))
++        local npcCount = 0
++        if requiredNPCs > 0 then
++            npcCount = countNPCs(cell, requiredNPCs)
++        end
+         if requiredNPCs > 0 and npcCount < requiredNPCs then
+             -- The cell is still settlement/ruin-qualified for biome ducking even
+             -- when the crowd bed does not play because too few NPCs are present.
+diff --git a/scripts/aura_openmw/player.lua b/scripts/aura_openmw/player.lua
+index e78ea48a569adf8aa9139c566676ff0af3ce64a4..44ed03ebfe85dd8924a48cb3f6569420ad86fe2d 100644
+--- a/scripts/aura_openmw/player.lua
++++ b/scripts/aura_openmw/player.lua
+@@ -649,7 +649,7 @@ local function updateFlora(cell)
+         return
+     end
+ 
+-    local cue = floraContext.getCue(cell)
++    local cue = floraContext.getCue(cell, current)
+     if not cue or not cue.path or not core.sound.isEnabled() then
+         return
+     end
+diff --git a/scripts/aura_openmw/statics/static_controller.lua b/scripts/aura_openmw/statics/static_controller.lua
+index d4d887f5803a04df6e05c0d146e2bc39c9a95d4c..c4101c3e4e8e483bae849eb4b996f1781336f791 100644
+--- a/scripts/aura_openmw/statics/static_controller.lua
++++ b/scripts/aura_openmw/statics/static_controller.lua
+@@ -28,10 +28,7 @@ local function matchesModule(moduleName, text)
+     if not moduleData then
+         return false
+     end
+-    if containsAny(text, moduleData.blocked) then
+-        return false
+-    end
+-    return containsAny(text, moduleData.ids)
++    return containsAny(text, moduleData.ids) and not containsAny(text, moduleData.blocked)
+ end
+ 
+ local function buildMatches(text)
+@@ -160,13 +157,19 @@ function M.new(options)
+ 
+     local function refreshCache(player, cell, scanDistance)
+         local entries = {}
++        local recordText = {}
++        local matchesByText = {}
+ 
+         for _, object in ipairs(objectQuery.getStaticsAndActivators(cell)) do
+             if objectQuery.isValid(object) then
+                 local distance = objectQuery.distanceBetween(player, object)
+                 if distance and distance <= scanDistance then
+-                    local text = objectQuery.scanText(object)
+-                    local matches = buildMatches(text)
++                    local text = objectQuery.scanText(object, recordText)
++                    local matches = matchesByText[text]
++                    if matches == nil then
++                        matches = buildMatches(text) or false
++                        matchesByText[text] = matches
++                    end
+                     if matches then
+                         entries[#entries + 1] = {
+                             object = object,
+diff --git a/scripts/aura_openmw/ui/flora_context.lua b/scripts/aura_openmw/ui/flora_context.lua
+index ac58037bc9ad6068f66be80ececece84e6852d0d..de8c469dee2171895e57e02af8bc8a547e42af4a 100644
+--- a/scripts/aura_openmw/ui/flora_context.lua
++++ b/scripts/aura_openmw/ui/flora_context.lua
+@@ -7,14 +7,6 @@ local objectQuery = require("scripts.aura_openmw.core.object_query")
+ local M = {}
+ local clamp = mathUtils.clamp
+ 
+-local function getDistanceToSelf(object)
+-    if not objectQuery.isValid(object) or not object.position or not self.position then
+-        return nil
+-    end
+-
+-    return (object.position - self.position):length()
+-end
+-
+ function M.new(options)
+     options = options or {}
+ 
+@@ -25,14 +17,8 @@ function M.new(options)
+     local logDebug = options.logDebug or function() end
+ 
+     local context = {}
+-
+-    local function getMoveDistanceSinceLastCue()
+-        if not state.lastFloraCuePosition or not self.position then
+-            return math.huge
+-        end
+-
+-        return (self.position - state.lastFloraCuePosition):length()
+-    end
++    local probeCell, probePosition, probeRadius, nextStationaryProbe
++    local floraByRecordId = {}
+ 
+     local function chooseFloraPath()
+         local paths = floraData.soundPaths or {}
+@@ -54,11 +40,7 @@ function M.new(options)
+         return minPitch + ((maxPitch - minPitch) * math.random())
+     end
+ 
+-    local function getFloraObjectFromRay()
+-        if not self.position then
+-            return nil
+-        end
+-
++    local function getFloraObjectFromRay(position)
+         local startZ = tonumber(config.FLORA_RAY_START_Z or 90) or 90
+         local endZ = tonumber(config.FLORA_RAY_END_Z or -80) or -80
+         local options = { ignore = self }
+@@ -68,8 +50,8 @@ function M.new(options)
+         end
+ 
+         local result = nearby.castRay(
+-            self.position + util.vector3(0, 0, startZ),
+-            self.position + util.vector3(0, 0, endZ),
++            position + util.vector3(0, 0, startZ),
++            position + util.vector3(0, 0, endZ),
+             options
+         )
+ 
+@@ -80,13 +62,24 @@ function M.new(options)
+         return nil
+     end
+ 
+-    local function getNearestFloraFromList(objects, radius)
++    local function matchesFlora(object)
++        local id = objectQuery.getRecordId(object)
++        local matches = floraByRecordId[id]
++        if matches == nil then
++            matches = floraData.matches(id) == true
++            floraByRecordId[id] = matches
++        end
++        return matches
++    end
++
++    local function getNearestFloraFromList(objects, radius, position)
+         local bestObject = nil
+         local bestDistance = math.huge
+ 
+         for _, object in ipairs(objects or {}) do
+-            if objectQuery.isValid(object) and floraData.matches(objectQuery.getRecordId(object)) then
+-                local distance = getDistanceToSelf(object)
++            if objectQuery.isValid(object) and matchesFlora(object) then
++                local objectPosition = object.position
++                local distance = objectPosition and (objectPosition - position):length()
+ 
+                 if distance and distance <= radius and distance < bestDistance then
+                     bestObject = object
+@@ -98,35 +91,23 @@ function M.new(options)
+         return bestObject, bestDistance
+     end
+ 
+-    local function getNearbyFloraFallback()
+-        local radius = tonumber(config.FLORA_NEARBY_RADIUS or 120) or 120
+-        local bestObject = nil
+-        local bestDistance = math.huge
+-
+-        local function consider(object, distance)
+-            if object and distance and distance < bestDistance then
+-                bestObject = object
+-                bestDistance = distance
+-            end
++    local function getNearbyFloraFallback(radius, position)
++        local container, containerDistance = getNearestFloraFromList(nearby.containers, radius, position)
++        local activator, activatorDistance = getNearestFloraFromList(nearby.activators, radius, position)
++        if activatorDistance < containerDistance then
++            return activator
+         end
+-
+-        local object, distance = getNearestFloraFromList(nearby.containers, radius)
+-        consider(object, distance)
+-
+-        object, distance = getNearestFloraFromList(nearby.activators, radius)
+-        consider(object, distance)
+-
+-        return bestObject, bestDistance
++        return container
+     end
+ 
+-    local function resolveFloraContact()
+-        local rayObject = getFloraObjectFromRay()
++    local function resolveFloraContact(radius, position)
++        local rayObject = getFloraObjectFromRay(position)
+ 
+-        if rayObject and floraData.matches(objectQuery.getRecordId(rayObject)) then
++        if rayObject and matchesFlora(rayObject) then
+             return rayObject, "downward ray"
+         end
+ 
+-        local nearbyObject = getNearbyFloraFallback()
++        local nearbyObject = getNearbyFloraFallback(radius, position)
+         if nearbyObject then
+             return nearbyObject, "nearby flora object"
+         end
+@@ -137,9 +118,13 @@ function M.new(options)
+     function context.reset()
+         state.lastFloraCuePosition = nil
+         state.floraCooldownTicks = 0
++        if probeCell then
++            probeCell, probePosition = nil, nil
++            floraByRecordId = {}
++        end
+     end
+ 
+-    function context.getCue(cell)
++    function context.getCue(cell, current)
+         if not config.FLORA_SOUNDS_ENABLED then
+             return nil
+         end
+@@ -154,15 +139,31 @@ function M.new(options)
+             return nil
+         end
+ 
++        local position = self.position
+         local moveThreshold = tonumber(config.FLORA_MOVE_THRESHOLD or 150) or 150
+-        if getMoveDistanceSinceLastCue() < moveThreshold then
++        if not position or (state.lastFloraCuePosition
++            and (position - state.lastFloraCuePosition):length() < moveThreshold) then
++            return nil
++        end
++
++        local radius = tonumber(config.FLORA_NEARBY_RADIUS or 120) or 120
++        if probeCell ~= cell then
++            probeCell, probePosition = cell, nil
++            floraByRecordId = {}
++        end
++        -- Retry after a stationary miss in case another script changes nearby flora.
++        if probePosition and probePosition.x == position.x and probePosition.y == position.y
++            and probePosition.z == position.z and radius == probeRadius and current < nextStationaryProbe then
+             return nil
+         end
+ 
+-        local object, reason = resolveFloraContact()
++        local object, reason = resolveFloraContact(radius, position)
+         if not object then
++            probePosition, probeRadius = position, radius
++            nextStationaryProbe = current + (config.FLORA_STATIONARY_RETRY_INTERVAL or 2)
+             return nil
+         end
++        probePosition = nil
+ 
+         local path = chooseFloraPath()
+         if not path then
+@@ -171,7 +172,7 @@ function M.new(options)
+ 
+         local cooldownTicks = tonumber(config.FLORA_COOLDOWN_TICKS or 1) or 1
+         state.floraCooldownTicks = math.max(0, cooldownTicks)
+-        state.lastFloraCuePosition = self.position
++        state.lastFloraCuePosition = position
+         state.lastFloraTrack = path
+ 
+         local volume = clamp(tonumber(config.FLORA_VOLUME or 1.0) or 1.0, 0, 5)

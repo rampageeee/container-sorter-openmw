@@ -1,0 +1,30 @@
+title: The Art of Alchemy
+description: Configure the placed alchemy apparatus and ingredient discovery.
+brewMinutes: Brewing time
+brewMinutesDescription: Game minutes per potion batch. Grinding time scales with this value and apparatus quality.
+experience: Alchemy experience multiplier
+experienceDescription: Multiply Alchemy experience awarded by this mod. Awards also scale with brewing time. A value of 0 disables awards from this mod.
+discovery: Ingredient discovery
+discoveryDescription: Reveal ingredient effects through Alchemy skill, tasting, brewing, and inspecting ground ingredients.
+naming: Name custom potions on collection
+namingDescription: Show the potion effects and ask for a name before collecting a custom batch.
+preventVanilla: Restrict inventory alchemy
+preventVanillaDescription: Block normal inventory use of supported apparatus and raw insoluble ingredients.
+apparatusBalance: Original apparatus quality
+apparatusBalanceDescription: Use the original mod’s quality tiers for its alchemy calculations.
+tutorial: Apparatus help
+tutorialDescription: Show the Help button in each apparatus menu.
+retortHelp: >
+  Choose two or three different ingredients that share an effect. Three ingredients
+  with the same effect make it stronger. Grind insoluble ingredients first.
+  A batch can contain up to three potions. Bring one empty Bottle for each potion you collect.
+alembicHelp: >
+  Refine one potion or combine two that share at least half of their effects.
+  Concentrate strengthens shared effects. Filter subtracts the first potion’s
+  shared strength from the second, down to a minimum. A batch can contain up to three potions.
+calcinatorHelp: >
+  Choose a potion and select Clear negative or Clear positive. The calcinator
+  weakens or removes the selected kind of effect. A batch can contain up to three potions.
+mortarHelp: >
+  Grind hides, ores, and other tough ingredients into usable powders. Alchemy
+  skill and mortar quality affect the yield. Finished powder goes into your inventory.

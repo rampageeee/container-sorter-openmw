@@ -1,0 +1,927 @@
+diff --git a/scripts/toxicology/actor.lua b/scripts/toxicology/actor.lua
+index 202093cffe15197df597c7f23fee5acde53bda76..e928779bf2b76f09c3878580106cc0e3a6368e43 100644
+--- a/scripts/toxicology/actor.lua
++++ b/scripts/toxicology/actor.lua
+@@ -20,6 +20,7 @@
+ ]]
+ 
+ local core    = require('openmw.core')
++local async   = require('openmw.async')
+ local I       = require('openmw.interfaces')
+ local self    = require('openmw.self')
+ local storage = require('openmw.storage')
+@@ -220,10 +221,22 @@ local lastPoisonHit = {
+     attacker = nil,
+ }
+ local DEATH_CHECK_INTERVAL = 0.25
+-local deathCheckTimer = math.random() * DEATH_CHECK_INTERVAL
++local firstDeathCheckDelay = (1 - math.random()) * DEATH_CHECK_INTERVAL
+ 
+-local function isPoisonedWeapon(weapon)
+-    return poisonedDataForKey(poisonStorageKey(weapon)) ~= nil
++local function checkPoisonDeath()
++    local expired = core.getSimulationTime() - lastPoisonHit.time > config.xp.killWindow
++    local isDead = not expired and types.Actor.isDead and types.Actor.isDead(self.object)
++    if not expired and not isDead then
++        async:newUnsavableSimulationTimer(DEATH_CHECK_INTERVAL, checkPoisonDeath)
++        return
++    end
++
++    local attacker = lastPoisonHit.attacker
++    lastPoisonHit.time = -math.huge
++    lastPoisonHit.attacker = nil
++    if isDead and attacker and types.Player.objectIsInstance(attacker) then
++        attacker:sendEvent('Toxicology_GrantXp', { useType = 'kill', amount = config.xp.kill })
++    end
+ end
+ 
+ local function onHit(attack)
+@@ -254,8 +267,12 @@ local function onHit(attack)
+         weaponType = source.weaponType,
+     })
+ 
++    local startTracking = lastPoisonHit.time == -math.huge
+     lastPoisonHit.time = core.getSimulationTime()
+     lastPoisonHit.attacker = attack.attacker
++    if startTracking then
++        async:newUnsavableSimulationTimer(firstDeathCheckDelay, checkPoisonDeath)
++    end
+ 
+     -- XP for landing the strike — fired on the player, not here.
+     attack.attacker:sendEvent('Toxicology_GrantXp', {
+@@ -303,48 +320,7 @@ local function onPlayFx(evt)
+     end
+ end
+ 
+--- Death handler — if the victim dies soon after a poisoned hit, grant kill XP.
+-local function clearLastPoisonHit()
+-    lastPoisonHit.time = -math.huge
+-    lastPoisonHit.attacker = nil
+-end
+-
+-local function onUpdate(dt)
+-    -- Only check death when we have a pending poisoned-hit track. This actor
+-    -- script can be attached to many NPCs/creatures, so avoid per-frame death
+-    -- and simulation-time reads while no poisoned hit is pending.
+-    if lastPoisonHit.time == -math.huge then return end
+-
+-    deathCheckTimer = deathCheckTimer + (tonumber(dt) or 0)
+-    if deathCheckTimer < DEATH_CHECK_INTERVAL then return end
+-    while deathCheckTimer >= DEATH_CHECK_INTERVAL do
+-        deathCheckTimer = deathCheckTimer - DEATH_CHECK_INTERVAL
+-    end
+-
+-    local now = core.getSimulationTime()
+-    if now - lastPoisonHit.time > config.xp.killWindow then
+-        clearLastPoisonHit()
+-        return
+-    end
+-
+-    local isDead = types.Actor.isDead and types.Actor.isDead(self.object)
+-    if not isDead then return end
+-
+-    if lastPoisonHit.attacker and types.Player.objectIsInstance(lastPoisonHit.attacker) then
+-        lastPoisonHit.attacker:sendEvent('Toxicology_GrantXp', {
+-            useType = 'kill',
+-            amount = config.xp.kill,
+-        })
+-    end
+-
+-    -- Clear so we don't double-credit
+-    clearLastPoisonHit()
+-end
+-
+ return {
+-    engineHandlers = {
+-        onUpdate = onUpdate,
+-    },
+     eventHandlers = {
+         Hit = onHit,
+         Toxicology_PlayFx = onPlayFx,
+diff --git a/scripts/toxicology/global.lua b/scripts/toxicology/global.lua
+index 2c57eeeb8c39e026d4e6577542f36f620ba98f6f..33995ad1d090f05d766215ac18c94741ba020902 100644
+--- a/scripts/toxicology/global.lua
++++ b/scripts/toxicology/global.lua
+@@ -161,6 +161,13 @@ end
+ local weaponPoisonState = {}
+ local weaponPoisonKeys = {}
+ 
++local function syncCoatingActivity()
++    local active = next(weaponPoisonKeys) ~= nil
++    if weaponPoisonSection:get('__hasCoatings') ~= active then
++        weaponPoisonSection:set('__hasCoatings', active)
++    end
++end
++
+ local function weaponPoisonDataIsActive(data)
+     return data and (data.poisonId ~= nil or data.layer2PoisonId ~= nil or data.layer3PoisonId ~= nil)
+ end
+@@ -243,6 +250,7 @@ local function getWeaponPoisonByKey(key)
+         if weaponPoisonDataIsActive(data) then
+             weaponPoisonState[key] = data
+             weaponPoisonKeys[key] = true
++            syncCoatingActivity()
+         end
+     end
+     return copyWeaponPoisonData(data)
+@@ -269,6 +277,7 @@ local function clearProjectileRuntimeState()
+     projectileRuntimeSection:set('poisonData', nil)
+     projectileRuntimeSection:set('lastConsumedToken', nil)
+     projectileRuntimeSection:set('lastConsumedWeaponKey', nil)
++    projectileRuntimeSection:set('lastAppliedToken', nil)
+ end
+ 
+ local function clearWeaponPoisonState()
+@@ -339,6 +348,7 @@ local function setWeaponPoisonByKey(key, data)
+             weaponPoisonSection:set(liveKey, nil)
+         end
+     end
++    syncCoatingActivity()
+ end
+ 
+ local function setWeaponPoison(weapon, data)
+@@ -498,7 +508,10 @@ end
+ 
+ -- ─── Existing-record poison distribution ─────────────────────────────────────
+ local staticPoisonPool = {}
++local staticPoisonPoolKeys = {}
+ local staticPoisonPoolReady = false
++local staticPoisonRecordCount = nil
++local staticPoisonEligibility = {}
+ -- Session-local cache of candidate poison ids discovered from live inventories.
+ -- Using a plain Lua table here avoids the read-only/persistence quirks that were
+ -- causing seeded ids to be logged but then dropped during pool rebuild.
+@@ -543,7 +556,7 @@ local function recordMatchesPoisonHeuristic(id, record)
+     return false
+ end
+ 
+-local function recordIsEligibleStaticPoison(id, record)
++local function classifyStaticPoison(id, record)
+     if not record then return false end
+     if lower(id):find('p_tox_', 1, true) then return false end
+     if recordShouldNeverBePoisonCandidate(id, record) then return false end
+@@ -569,6 +582,16 @@ local function recordIsEligibleStaticPoison(id, record)
+     return recordMatchesPoisonHeuristic(id, record)
+ end
+ 
++local function recordIsEligibleStaticPoison(id, record)
++    if not record then return false end
++    local eligible = staticPoisonEligibility[id]
++    if eligible == nil then
++        eligible = classifyStaticPoison(id, record)
++        staticPoisonEligibility[id] = eligible
++    end
++    return eligible
++end
++
+ local function getDiscoveredPoisonList()
+     return discoveredPoisonIdList
+ end
+@@ -579,13 +602,17 @@ local function addDiscoveredPoisonId(recordId)
+     if discoveredPoisonIdSet[key] then return false end
+     discoveredPoisonIdSet[key] = true
+     discoveredPoisonIdList[#discoveredPoisonIdList + 1] = recordId
++    if not staticPoisonPoolKeys[key] then
++        staticPoisonPoolReady = false
++    end
+     debugLog('[Distribution] Discovered existing poison record: ' .. recordId, 'debugDistributionMessages')
+     return true
+ end
+ 
+ local function considerPotionRecordId(recordId)
+     if type(recordId) ~= 'string' or recordId == '' then return false end
+-    if lower(recordId):find('generated:', 1, true) then return false end
++    local key = lower(recordId)
++    if discoveredPoisonIdSet[key] or key:find('generated:', 1, true) then return false end
+     local rec = types.Potion.records[recordId]
+     if not rec then return false end
+     if not recordIsEligibleStaticPoison(recordId, rec) then return false end
+@@ -606,13 +633,15 @@ end
+ local function rebuildStaticPoisonPool()
+     staticPoisonPool = {}
+     staticPoisonPoolReady = true
++    staticPoisonRecordCount = #types.Potion.records
+     local seen = {}
++    staticPoisonPoolKeys = seen
+ 
+-    local function addCandidate(recordId)
++    local function addCandidate(recordId, record)
+         if type(recordId) ~= 'string' or recordId == '' then return end
+         local key = lower(recordId)
+         if seen[key] then return end
+-        local record = types.Potion.records[recordId]
++        record = record or types.Potion.records[recordId]
+         if not record then return end
+         if not recordIsEligibleStaticPoison(recordId, record) then return end
+         staticPoisonPool[#staticPoisonPool + 1] = recordId
+@@ -620,9 +649,7 @@ local function rebuildStaticPoisonPool()
+     end
+ 
+     for id, record in pairs(types.Potion.records) do
+-        if type(id) == 'string' and recordIsEligibleStaticPoison(id, record) then
+-            addCandidate(id)
+-        end
++        addCandidate(id, record)
+     end
+ 
+     if config.fallbackExistingPoisonIds then
+@@ -647,7 +674,7 @@ local function rebuildStaticPoisonPool()
+ end
+ 
+ local function ensureStaticPoisonPool()
+-    if staticPoisonPoolReady then return end
++    if staticPoisonPoolReady and staticPoisonRecordCount == #types.Potion.records then return end
+     rebuildStaticPoisonPool()
+ end
+ 
+@@ -794,7 +821,6 @@ local function stockCellContainers(cell)
+             if inventory then scanInventoryForPoisonIds(inventory) end
+         end
+     end
+-    staticPoisonPoolReady = false
+     local key = cellStateKey(cell)
+     if not key then return 0 end
+     local doneKey = DISTRIBUTION_SCHEMA .. ':containers:' .. key
+@@ -855,7 +881,6 @@ local function stockCellMerchants(cell)
+         local inv = types.Actor.inventory(npc)
+         if inv then scanInventoryForPoisonIds(inv) end
+     end
+-    staticPoisonPoolReady = false
+     local key = cellStateKey(cell)
+     if not key then return 0 end
+     local added = 0
+@@ -1578,7 +1603,7 @@ local function handleRequestInit(evt)
+         local inv = types.Actor.inventory(player)
+         if inv then scanInventoryForPoisonIds(inv) end
+     end
+-    rebuildStaticPoisonPool()
++    ensureStaticPoisonPool()
+     if player then
+         player:sendEvent('Toxicology_PoisonIdMap', {
+             idMap = poisonIdMap,
+@@ -1605,7 +1630,10 @@ end
+ 
+ local function onLoad(data)
+     restoreWeaponPoisonState(data and data.weaponPoisonState)
++    syncCoatingActivity()
+     clearProjectileRuntimeState()
++    staticPoisonPoolReady = false
++    staticPoisonEligibility = {}
+ end
+ 
+ -- Settings mirror: player script reads its playerSection and forwards the
+@@ -1613,17 +1641,13 @@ end
+ -- can write to globalSection, hence this indirection.
+ local function handleUpdateRuntimeSettings(payload)
+     if type(payload) ~= 'table' then return end
++    local allowMixed = readPlayerSetting('Settings_' .. MODNAME .. '_Distribution', 'allowMixedEffectPoisons', true)
+     for key, value in pairs(payload) do
+         runtimeSection:set(key, value)
+     end
+-    if payload.enableExistingPoisonDistribution ~= nil
+-       or payload.ignoreAlcoholPotions ~= nil
+-       or payload.allowMixedEffectPoisons ~= nil
+-       or payload.distributeExistingPoisonsToContainers ~= nil
+-       or payload.distributeExistingPoisonsToMerchants ~= nil
+-       or payload.existingPoisonMerchantStock ~= nil
+-       or payload.existingPoisonContainerChance ~= nil then
++    if payload.allowMixedEffectPoisons ~= nil and payload.allowMixedEffectPoisons ~= allowMixed then
+         staticPoisonPoolReady = false
++        staticPoisonEligibility = {}
+     end
+ end
+ 
+diff --git a/scripts/toxicology/init.lua b/scripts/toxicology/init.lua
+index f38686c383429013eeea1bbcbbd98cf46cc632f1..4cc25fe88d24810f4903d864a13b9af4e6afd882 100644
+--- a/scripts/toxicology/init.lua
++++ b/scripts/toxicology/init.lua
+@@ -37,6 +37,7 @@ local settingsSections = {}
+ local maintenance = {
+     runtimeSettingsDirty = true,
+     classBonusNeedsReconcile = true,
++    skillDescriptionDirty = true,
+     skillRepairVersion = 0,
+ }
+ 
+@@ -54,6 +55,7 @@ local function settingSection(groupSuffix)
+     settingsSections[sectionName] = entry
+     section:subscribe(async:callback(function(_changedSectionName, key)
+         local current = settingsSections[sectionName]
++        local brewWasEnabled = current.cache.xpOnBrew ~= false
+         if key == nil then
+             current.cache = section:asTable()
+         else
+@@ -63,6 +65,16 @@ local function settingSection(groupSuffix)
+         if groupSuffix == 'Skill' and (key == nil or key == 'enableClassBonus') then
+             maintenance.classBonusNeedsReconcile = true
+         end
++        if groupSuffix == 'Perks' or (groupSuffix == 'UI'
++            and (key == nil or key == 'showMechanicTooltips' or key == 'showPerkTooltips'
++                or key == 'tooltipUnlockedOnly')) then
++            maintenance.skillDescriptionDirty = true
++        end
++        if groupSuffix == 'Skill' and (key == nil or key == 'xpOnBrew')
++            and not brewWasEnabled and current.cache.xpOnBrew ~= false
++            and maintenance.seedGeneratedIndex then
++            maintenance.seedGeneratedIndex()
++        end
+     end))
+     return section
+ end
+@@ -253,8 +265,7 @@ local function copyWeaponPoisonData(raw)
+ end
+ 
+ local function getEquippedProjectileContext()
+-    local equipment = types.Actor.getEquipment(self)
+-    local weapon = equipment and equipment[types.Actor.EQUIPMENT_SLOT.CarriedRight]
++    local weapon = types.Actor.getEquipment(self, types.Actor.EQUIPMENT_SLOT.CarriedRight)
+     local rec = safeWeaponRecord(weapon)
+     if not rec or not isProjectileWeaponType(rec.type) then return nil end
+ 
+@@ -272,7 +283,7 @@ local function getEquippedProjectileContext()
+     }
+ end
+ 
+-local function spendProjectilePoisonOnAttackStart(ctx)
++local function spendProjectilePoisonOnAttackStart()
+     -- Ranged poison consumption is keyed to the attack button down-edge: the
+     -- moment the player starts drawing a bow/crossbow or starts a thrown attack.
+     -- This avoids relying on projectile Hit events, miss fallbacks, release edge
+@@ -281,7 +292,7 @@ local function spendProjectilePoisonOnAttackStart(ctx)
+     -- later hits, misses, or is cancelled.
+     if not readSetting('', 'enabled', true) then return end
+ 
+-    ctx = ctx or getEquippedProjectileContext()
++    local ctx = getEquippedProjectileContext()
+     if not ctx then return end
+ 
+     if not weaponHasActivePoisonData(ctx.poisonData) then
+@@ -376,21 +387,22 @@ local function projectileUseActionPressedRaw()
+ end
+ 
+ local function updateProjectileAttackStartConsumption()
+-    local attackPressed = projectileUseActionPressedRaw()
++    local useMouseEvents = input.isMouseButtonPressed ~= nil
++    if useMouseEvents and not maintenance.projectilePressPending then return end
++    maintenance.projectilePressPending = false
+ 
+-    if not isGameplayInputMode() then
+-        -- Keep the edge state synchronized while menus consume the click. This
+-        -- prevents a held menu click from spending a coating on the first frame
+-        -- after the menu closes.
+-        previousAttackPressed = attackPressed
++    -- An uncoated ranged attack can invalidate a previous poisoned projectile.
++    if not weaponPoisonSection:get('__hasCoatings') and not projectileRuntimeSection:get('active') then
++        previousAttackPressed = false
+         return
+     end
+ 
+-    if attackPressed and not previousAttackPressed then
+-        spendProjectilePoisonOnAttackStart(getEquippedProjectileContext())
+-    end
+-
++    local attackPressed = projectileUseActionPressedRaw()
++    local attackStarted = attackPressed and (useMouseEvents or not previousAttackPressed)
+     previousAttackPressed = attackPressed
++    if attackStarted and isGameplayInputMode() then
++        spendProjectilePoisonOnAttackStart()
++    end
+ end
+ 
+ local function xpMultiplier()
+@@ -416,7 +428,6 @@ local feedbackStyle = {
+     stackLimit = 5,
+     counter = 0,
+     duration = 1.35,
+-    heartbeatTimer = 0,
+     entries = {},
+     popupBusSection = storage.playerSection('SkillPerkPopupShared'),
+     managerId = 'Toxicology',
+@@ -557,12 +568,14 @@ function feedbackStyle.destroyEntry(index)
+ end
+ 
+ function feedbackStyle.destroyAll()
++    feedbackStyle.nextExpiry = nil
+     for i = #feedbackStyle.entries, 1, -1 do
+         feedbackStyle.destroyEntry(i)
+     end
+ end
+ 
+ function feedbackStyle.reflow()
++    if #feedbackStyle.entries == 0 then return end
+     local now = core.getSimulationTime()
+     for i = #feedbackStyle.entries, 1, -1 do
+         local entry = feedbackStyle.entries[i]
+@@ -573,12 +586,24 @@ function feedbackStyle.reflow()
+     while #feedbackStyle.entries > feedbackStyle.stackLimit do
+         feedbackStyle.destroyEntry(#feedbackStyle.entries)
+     end
++    local nextExpiry
+     for i, entry in ipairs(feedbackStyle.entries) do
++        if not nextExpiry or entry.expiresAt < nextExpiry then
++            nextExpiry = entry.expiresAt
++        end
+         entry.element.layout.props.relativePosition = util.vector2(feedbackStyle.stackBaseX, feedbackStyle.stackBaseY + (i - 1) * feedbackStyle.stackSpacing)
+         entry.element.layout.props.anchor = util.vector2(feedbackStyle.stackAnchorX, feedbackStyle.stackAnchorY)
+         entry.element.layout.props.visible = true
+         entry.element:update()
+     end
++    if nextExpiry and (not feedbackStyle.nextExpiry or nextExpiry < feedbackStyle.nextExpiry) then
++        feedbackStyle.nextExpiry = nextExpiry
++        async:newUnsavableSimulationTimer(nextExpiry - now, function()
++            if feedbackStyle.nextExpiry ~= nextExpiry then return end
++            feedbackStyle.nextExpiry = nil
++            feedbackStyle.reflow()
++        end)
++    end
+ end
+ 
+ function feedbackStyle.showCustom(payload)
+@@ -587,7 +612,6 @@ function feedbackStyle.showCustom(payload)
+     if text == '' then return end
+ 
+     feedbackStyle.applyStackSettings(payload)
+-    feedbackStyle.reflow()
+     feedbackStyle.counter = feedbackStyle.counter + 1
+ 
+     local defaultText = type(payload.defaultTextRgb) == 'table' and payload.defaultTextRgb or feedbackStyle.textRgb
+@@ -619,28 +643,13 @@ function feedbackStyle.showCustom(payload)
+     feedbackStyle.reflow()
+ end
+ 
+-function feedbackStyle.update(dt)
+-    feedbackStyle.heartbeatTimer = (feedbackStyle.heartbeatTimer or 0) + (tonumber(dt) or 0)
+-    if feedbackStyle.heartbeatTimer >= 0.5 then
+-        feedbackStyle.heartbeatTimer = 0
+-        feedbackStyle.registerCandidate()
+-    end
+-    feedbackStyle.reflow()
+-end
+-
+-local function updateFeedbackVisibility()
+-    feedbackStyle.update(0)
+-end
+-
+ function feedbackStyle.onSkillPerkPopupShow(payload)
+-    feedbackStyle.registerCandidate()
+     if feedbackStyle.electedManagerId() == feedbackStyle.managerId then
+         feedbackStyle.showCustom(payload)
+     end
+ end
+ 
+ function feedbackStyle.emit(payload)
+-    feedbackStyle.registerCandidate()
+     if feedbackStyle.electedManagerId() == feedbackStyle.managerId then
+         feedbackStyle.showCustom(payload)
+         return
+@@ -851,8 +860,7 @@ end
+ 
+ local lastBuiltDescription = nil
+ 
+-local function buildSkillDescription()
+-    local skill = getToxicologySkillLevel()
++local function buildSkillDescription(skill)
+     local charges = chargesAtSkill(skill)
+     local coatings = coatingsAtSkill(skill)
+     local showMechanicTooltips = readSetting('UI', 'showMechanicTooltips', true)
+@@ -913,10 +921,15 @@ end
+ local function refreshSkillDescription(force)
+     if not I.SkillFramework or not I.SkillFramework.modifySkill then return end
+     if not skillRegistered then return end
+-    local description = buildSkillDescription()
+-    if not force and description == lastBuiltDescription then return end
+-    I.SkillFramework.modifySkill(SKILL_ID, { description = description })
+-    lastBuiltDescription = description
++    local skill = getToxicologySkillLevel()
++    if not force and not maintenance.skillDescriptionDirty and skill == maintenance.lastDescriptionSkill then return end
++    local description = buildSkillDescription(skill)
++    if force or description ~= lastBuiltDescription then
++        I.SkillFramework.modifySkill(SKILL_ID, { description = description })
++        lastBuiltDescription = description
++    end
++    maintenance.lastDescriptionSkill = skill
++    maintenance.skillDescriptionDirty = false
+ end
+ 
+ -- ─── Class bonus (native base) ───────────────────────────────────────────────
+@@ -1677,6 +1690,7 @@ local function seedGeneratedIndex(reason)
+             'debugXpMessages')
+     end
+ end
++maintenance.seedGeneratedIndex = seedGeneratedIndex
+ 
+ local function onAlchemySkillUsed(skillId, params)
+     if skillId ~= 'alchemy' then return end
+@@ -1685,7 +1699,6 @@ local function onAlchemySkillUsed(skillId, params)
+         return
+     end
+     if not readSetting('Skill', 'xpOnBrew', true) then
+-        seedGeneratedIndex()
+         return
+     end
+     if not skillRegistered then
+@@ -1774,7 +1787,6 @@ end
+ 
+ local tooltipRegistered = false
+ local ieRowClickRegistered = false
+-local lastInventoryBadgeSignature = nil
+ local pendingBadgeRepaint = false
+ 
+ local function isSupportedWeaponRowItem(item)
+@@ -2228,38 +2240,6 @@ local function itemHasPoisonBadge(item)
+     return weaponHasActivePoisonData(getWeaponPoisonData(item))
+ end
+ 
+-local function inventoryExtenderPoisonSignature()
+-    local parts = {}
+-    local inv = types.Actor.inventory(self)
+-    if inv then
+-        local ok, weapons = pcall(function() return inv:getAll(types.Weapon) end)
+-        if not ok or type(weapons) ~= 'table' then
+-            ok, weapons = pcall(function() return inv:getAll() end)
+-        end
+-        if ok and type(weapons) == 'table' then
+-            for _, item in ipairs(weapons) do
+-                if safeWeaponRecord(item) then
+-                    local key = poisonStorageKey(item)
+-                    local data = key and getWeaponPoisonData(item)
+-                    if weaponHasActivePoisonData(data) then
+-                        parts[#parts + 1] = table.concat({
+-                            tostring(key or item.id or ''),
+-                            tostring(data.poisonId or ''),
+-                            tostring(data.charges or 0),
+-                            tostring(data.layer2PoisonId or ''),
+-                            tostring(data.layer2Charges or 0),
+-                            tostring(data.layer3PoisonId or ''),
+-                            tostring(data.layer3Charges or 0),
+-                        }, ':')
+-                    end
+-                end
+-            end
+-        end
+-    end
+-    table.sort(parts)
+-    return table.concat(parts, '|')
+-end
+-
+ -- recursive search for a named child in a cached row widget
+ local function findNamedChild(node, name)
+     if not node then return nil end
+@@ -2293,6 +2273,7 @@ end
+ local function paintInventoryExtenderBadges()
+     pendingBadgeRepaint = false
+     if not I.InventoryExtender or not I.InventoryExtender.getWindows then return end
++    maintenance.badgesMayBeShown = weaponPoisonSection:get('__hasCoatings') == true
+     local windows = I.InventoryExtender.getWindows()
+     if type(windows) ~= 'table' then return end
+ 
+@@ -2330,15 +2311,6 @@ local function scheduleBadgeRepaint()
+     pendingBadgeRepaint = true
+ end
+ 
+-local function updateInventoryExtenderBadges()
+-    if not I.InventoryExtender then return end
+-    local signature = inventoryExtenderPoisonSignature()
+-    if signature ~= lastInventoryBadgeSignature then
+-        lastInventoryBadgeSignature = signature
+-    end
+-    scheduleBadgeRepaint()
+-end
+-
+ local vanillaInventoryIndicator = nil
+ local currentUiMode = nil
+ local hudElement = nil
+@@ -2372,30 +2344,25 @@ local function destroyVanillaInventoryIndicator()
+         vanillaInventoryIndicator:destroy()
+         vanillaInventoryIndicator = nil
+     end
++    maintenance.inventoryIndicatorContents = nil
+ end
+ 
+ local function collectPoisonedInventoryWeapons()
+     local inv = types.Actor.inventory(self)
+     if not inv then return {} end
+ 
+-    local ok, items = pcall(function() return inv:getAll(types.Weapon) end)
+-    if not ok or type(items) ~= 'table' then
+-        items = inv:getAll()
+-    end
+-
+     local rows = {}
+     local seen = {}
+-    for _, item in ipairs(items) do
+-        if safeWeaponRecord(item) and itemHasPoisonBadge(item) and not seen[item.id] then
+-            local rec = types.Weapon.record(item)
+-            local data = getWeaponPoisonData(item)
++    for _, item in ipairs(inv:getAll(types.Weapon)) do
++        local rec = safeWeaponRecord(item)
++        local data = rec and not seen[item.id] and getWeaponPoisonData(item)
++        if weaponHasActivePoisonData(data) then
+             local layers = activePoisonLayers(data)
+             local layer = layers[1]
+             if layer then
+                 seen[item.id] = true
+                 local extra = #layers > 1 and (' +' .. tostring(#layers - 1)) or ''
+                 rows[#rows + 1] = {
+-                    item = item,
+                     icon = rec and rec.icon or 'icons/default icon.dds',
+                     weaponName = rec and rec.name or tostring(item.recordId or item.id),
+                     poisonText = layer.name .. extra .. ' — ' .. chargeText(layer.charges),
+@@ -2464,6 +2431,10 @@ local function updateVanillaInventoryIndicator()
+         destroyVanillaInventoryIndicator()
+         return
+     end
++    if not weaponPoisonSection:get('__hasCoatings') then
++        destroyVanillaInventoryIndicator()
++        return
++    end
+     if not isInventoryLikeMode(currentModeName()) then
+         destroyVanillaInventoryIndicator()
+         return
+@@ -2474,6 +2445,19 @@ local function updateVanillaInventoryIndicator()
+         destroyVanillaInventoryIndicator()
+         return
+     end
++    local limit = math.min(#rows, VANILLA_INVENTORY_INDICATOR_MAX_ROWS)
++    local previous = maintenance.inventoryIndicatorContents
++    local changed = not previous or #rows ~= #previous
++    if not changed then
++        for i = 1, limit do
++            local row, old = rows[i], previous[i]
++            if row.icon ~= old.icon or row.weaponName ~= old.weaponName or row.poisonText ~= old.poisonText then
++                changed = true
++                break
++            end
++        end
++    end
++    if not changed then return end
+ 
+     local content = ui.content {
+         {
+@@ -2502,7 +2486,6 @@ local function updateVanillaInventoryIndicator()
+         tooltipInterval(0, 4),
+     }
+ 
+-    local limit = math.min(#rows, VANILLA_INVENTORY_INDICATOR_MAX_ROWS)
+     for i = 1, limit do
+         content:add(vanillaInventoryIndicatorRow(rows[i]))
+         if i < limit then content:add(tooltipInterval(0, 3)) end
+@@ -2543,6 +2526,7 @@ local function updateVanillaInventoryIndicator()
+     -- table in-place is not part of the stable contract.
+     destroyVanillaInventoryIndicator()
+     vanillaInventoryIndicator = ui.create(layout)
++    maintenance.inventoryIndicatorContents = rows
+ end
+ 
+ 
+@@ -2582,6 +2566,13 @@ local function destroyHud()
+     end
+ end
+ 
++local function hideHud()
++    if hudElement and hudElement.layout.props.visible then
++        hudElement.layout.props.visible = false
++        hudElement:update()
++    end
++end
++
+ -- Build the HUD element as a horizontal Flex with: icon | " Name (N) "
+ -- The icon uses our Toxicology DDS so we avoid unicode glyphs that the
+ -- vanilla bitmap font can't render (the "?" / box the user reported).
+@@ -2745,15 +2736,14 @@ local function updateHud()
+         destroyHud()
+         return
+     end
+-    local equipment = types.Actor.getEquipment(self)
+-    local weapon = equipment and equipment[types.Actor.EQUIPMENT_SLOT.CarriedRight]
+-    if not safeWeaponRecord(weapon) then
+-        if hudElement then hudElement.layout.props.visible = false; hudElement:update() end
++    if not weaponPoisonSection:get('__hasCoatings') then
++        hideHud()
+         return
+     end
++    local weapon = types.Actor.getEquipment(self, types.Actor.EQUIPMENT_SLOT.CarriedRight)
+     local data = getWeaponPoisonData(weapon)
+-    if not data or not (data.poisonId or data.layer2PoisonId or data.layer3PoisonId) then
+-        if hudElement then hudElement.layout.props.visible = false; hudElement:update() end
++    if not weaponHasActivePoisonData(data) then
++        hideHud()
+         return
+     end
+     local parts = {}
+@@ -2773,13 +2763,22 @@ local function updateHud()
+     local el = ensureHud()
+     local iconSize = hudIndicatorIconSize()
+     local textSize = hudIndicatorTextSize()
++    local position = hudIndicatorPosition()
++    local root = el.layout.props
++    local icon = el.layout.content[1].props
++    local label = el.layout.content[2].props
++    if root.visible and label.text == text and label.textSize == textSize
++        and icon.size.x == iconSize and icon.size.y == iconSize
++        and root.position.x == position.x and root.position.y == position.y then
++        return
++    end
+ 
+     -- Update the Image/Text widgets inside our Flex.
+-    el.layout.content[1].props.size = util.vector2(iconSize, iconSize)
+-    el.layout.content[2].props.text = text
+-    el.layout.content[2].props.textSize = textSize
+-    el.layout.props.position = hudIndicatorPosition()
+-    el.layout.props.visible = true
++    icon.size = util.vector2(iconSize, iconSize)
++    label.text = text
++    label.textSize = textSize
++    root.position = position
++    root.visible = true
+     el:update()
+ end
+ 
+@@ -2924,15 +2923,13 @@ local function onConsoleCommand(mode, command, selectedObject)
+ end
+ 
+ 
+--- ─── Frame update ──────────────────────────────────────────────────────────
+-local updateTimer = 0.5
++-- ─── Player updates ────────────────────────────────────────────────────────
++local MAINTENANCE_INTERVAL = 0.5
+ local initRequested = false
+ local lastDistributedCellKey = nil
+ 
+-local function onFrame(dt)
+-    -- Input actions are resolved immediately before onFrame. Reading the built-in
+-    -- Use action here catches the left-click attack/draw edge reliably for bows,
+-    -- crossbows, and thrown weapons, including shots that later miss.
++local function onFrame()
++    -- Resolve the queued mouse press after OpenMW finishes processing input.
+     updateProjectileAttackStartConsumption()
+ 
+     -- drain deferred IE badge repaints
+@@ -2949,25 +2946,27 @@ local function currentCellKey(obj)
+     return string.format('%s,%s', tostring(cell.gridX), tostring(cell.gridY))
+ end
+ 
+-local function onUpdate(dt)
+-    dt = tonumber(dt) or 0
+-    feedbackStyle.update(dt)
+-
+-    -- Periodic throttled work. Accumulate frame time rather than polling
+-    -- simulation time for throttling.
+-    updateTimer = updateTimer + dt
+-    if updateTimer < 0.5 then return end
+-    while updateTimer >= 0.5 do
+-        updateTimer = updateTimer - 0.5
+-    end
++local function requestMaintenance()
++    maintenance.refreshPending = true
++    async:newUnsavableSimulationTimer(MAINTENANCE_INTERVAL, requestMaintenance)
++end
+ 
++local function onUpdate()
++    -- OpenMW runs timers before queued skill-use events and onUpdate after
++    -- them. Take the inventory snapshot here so a brew on the same tick
++    -- can still compare itself against the previous snapshot.
++    if not maintenance.refreshPending then return end
++    maintenance.refreshPending = false
++    feedbackStyle.registerCandidate()
+ 
+     local enabled = readSetting('', 'enabled', true)
+ 
+     -- Keep generated-potion count baselines current between brewing sessions.
+     -- The actual brew-XP handler still compares against this snapshot at the
+     -- moment SkillProgression reports a successful Alchemy create event.
+-    seedGeneratedIndex()
++    if readSetting('Skill', 'xpOnBrew', true) then
++        seedGeneratedIndex()
++    end
+ 
+     -- Mirror player settings into the global runtime section so global.lua
+     -- can read them (global scripts can't touch storage.playerSection).
+@@ -2979,9 +2978,8 @@ local function onUpdate(dt)
+ 
+     if not enabled then
+         if activeDialog then destroyDialog() end
+-        updateFeedbackVisibility()
+         destroyVanillaInventoryIndicator()
+-        if hudElement then hudElement.layout.props.visible = false; hudElement:update() end
++        hideHud()
+         return
+     end
+ 
+@@ -2998,19 +2996,19 @@ local function onUpdate(dt)
+ 
+     -- One-shot: once settings are synced, ask global to scan existing poison
+     -- records and process the current cell.
++    local cellKey = currentCellKey(self.object)
+     if not initRequested then
+         syncRuntimeSkillToGlobal(true)
+         core.sendGlobalEvent('Toxicology_RequestInit', { player = self.object })
+         initRequested = true
+-    end
+-
+-    local cellKey = currentCellKey(self.object)
+-    if cellKey and cellKey ~= lastDistributedCellKey then
++        lastDistributedCellKey = cellKey
++    elseif cellKey and cellKey ~= lastDistributedCellKey then
+         core.sendGlobalEvent('Toxicology_DistributeCell', { player = self.object })
+         lastDistributedCellKey = cellKey
+     end
+ 
+-    -- IE tooltip is idempotent — register once IE is available
++    local hasCoatings = weaponPoisonSection:get('__hasCoatings') == true
++    -- IE tooltip is idempotent — register once IE is available.
+     if I.InventoryExtender then
+         if not tooltipRegistered then
+             registerInventoryExtenderTooltip()
+@@ -3018,20 +3016,20 @@ local function onUpdate(dt)
+         if not ieRowClickRegistered then
+             registerInventoryExtenderRowClickHandler()
+         end
+-        updateInventoryExtenderBadges()
+-    else
++        -- Also clear badges painted by an event between maintenance ticks.
++        if hasCoatings or maintenance.badgesMayBeShown then
++            scheduleBadgeRepaint()
++        end
++    elseif hasCoatings or vanillaInventoryIndicator then
+         updateVanillaInventoryIndicator()
+     end
+-
+-    -- Refresh the dynamic skill description to reflect current level / perks.
+-    -- Cached via lastBuiltDescription so this is a no-op when nothing changed.
+     refreshSkillDescription()
+ 
+-    -- Expire feedback overlay when its duration is up
+-    updateFeedbackVisibility()
+-
+-    -- HUD indicator
+-    updateHud()
++    if hasCoatings then
++        updateHud()
++    else
++        hideHud()
++    end
+ end
+ 
+ -- ─── GRIP compatibility ───────────────────────────────────────────────────
+@@ -3082,11 +3080,10 @@ local function transferWeaponPoisonState(oldWeapon, newWeapon, reason)
+ end
+ 
+ local function refreshPoisonUiAfterTransfer(_evt)
+-    lastInventoryBadgeSignature = nil
+     -- The HUD and Inventory Extender icon badge read from the same keyed
+     -- storage. Refresh immediately so toggling stance does not leave stale UI.
+     updateHud()
+-    updateInventoryExtenderBadges()
++    scheduleBadgeRepaint()
+     updateVanillaInventoryIndicator()
+ end
+ 
+@@ -3108,6 +3105,7 @@ end
+ 
+ local function onLoad(data)
+     destroyDialog()
++    feedbackStyle.destroyAll()
+     feedbackStyle.resetRegistryOnce()
+     feedbackStyle.registerCandidate()
+     classBonusApplied = (data and data.classBonusApplied) or false
+@@ -3120,11 +3118,20 @@ local function onLoad(data)
+     -- existing Generated:0x... potions (carried over from before this mod,
+     -- or from previous save sessions) are not incorrectly treated as new
+     -- brews on first skillUsed event after load.
+-    seedGeneratedIndex('seed')
++    if readSetting('Skill', 'xpOnBrew', true) then
++        seedGeneratedIndex('seed')
++    end
+     lastSyncedSkill = nil
++    lastBuiltDescription = nil
++    maintenance.skillDescriptionDirty = true
+     maintenance.runtimeSettingsDirty = true
+     previousAttackPressed = false
+-    updateTimer = 0.5
++    maintenance.projectilePressPending = false
++    initRequested = false
++    lastDistributedCellKey = nil
++    maintenance.badgesMayBeShown = false
++    pendingBadgeRepaint = false
++    requestMaintenance()
+     lastAAMClassBonus = nil
+     destroyVanillaInventoryIndicator()
+     notifyAAM(true)
+@@ -3150,6 +3157,9 @@ return {
+     },
+     engineHandlers = {
+         onConsoleCommand = onConsoleCommand,
++        onMouseButtonPress = function(button)
++            if button == 1 then maintenance.projectilePressPending = true end
++        end,
+         onFrame = onFrame,
+         onUpdate = onUpdate,
+         onSave = onSave,
+@@ -3169,4 +3179,4 @@ return {
+         IE_Update                         = scheduleBadgeRepaint,
+         MI_Update                         = scheduleBadgeRepaint,
+     },
+-}
+\ No newline at end of file
++}
